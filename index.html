@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Nysse — bussit kartalla</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b0f14">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --bg: #0b0f14;
+    --panel: #121820;
+    --panel-2: #182130;
+    --line: #23303f;
+    --text: #dfe8f0;
+    --dim: #7d93a8;
+    --accent: #ffb400;
+    --accent-2: #35c2c1;
+    --danger: #ff5d5d;
+    --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  #map { position: absolute; inset: 0; background: #0b0f14; }
+
+  .leaflet-tile-pane { filter: saturate(0.55) brightness(0.62) contrast(1.05) hue-rotate(180deg) invert(1); }
+
+  #hud {
+    position: absolute; top: 12px; left: 12px; right: 12px;
+    z-index: 1000; display: flex; gap: 8px; align-items: flex-start;
+    pointer-events: none;
+  }
+  .panel {
+    pointer-events: auto;
+    background: rgba(18,24,32,0.92);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    backdrop-filter: blur(6px);
+  }
+  #title-card { padding: 10px 14px; flex: 0 0 auto; }
+  #title-card h1 { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin: 0; color: var(--text); }
+  #title-card .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 3px; display:flex; gap:8px; align-items:center; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); display:inline-block; }
+  .dot.stale { background: var(--danger); }
+  .dot.pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:0.35; } }
+
+  #filter-card { padding: 8px 10px; flex: 1 1 auto; max-width: 420px; display:flex; flex-direction:column; gap:6px; }
+  #filter-input {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    font-family: var(--mono); font-size: 13px; padding: 7px 9px; border-radius: 7px; outline: none; width: 100%;
+  }
+  #filter-input::placeholder { color: var(--dim); }
+  #filter-input:focus { border-color: var(--accent-2); }
+  #route-chips { display:flex; flex-wrap:wrap; gap:5px; max-height: 74px; overflow-y:auto; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; padding: 3px 7px; border-radius: 5px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--dim); cursor: pointer; user-select:none;
+    white-space: nowrap;
+  }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #1a1300; font-weight: 700; }
+
+  #stats {
+    position: absolute; bottom: 12px; left: 12px; z-index: 1000;
+    padding: 8px 12px; font-family: var(--mono); font-size: 11px; color: var(--dim);
+    display:flex; gap: 14px;
+  }
+  #stats b { color: var(--text); }
+
+  #err {
+    position:absolute; bottom: 12px; right: 12px; z-index: 1000;
+    padding: 8px 12px; font-family: var(--mono); font-size: 11px; color: var(--danger);
+    display:none; max-width: 320px;
+  }
+
+  .bus-icon {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent-2); border: 2px solid #06282b;
+    display:flex; align-items:center; justify-content:center;
+    font-family: var(--mono); font-weight:800; font-size: 9px; color: #06282b;
+    box-shadow: 0 0 0 2px rgba(53,194,193,0.25);
+    transform-origin: center center;
+  }
+  .bus-icon.picked { background: var(--accent); box-shadow: 0 0 0 3px rgba(255,180,0,0.35); }
+  .bus-icon .arrow {
+    position:absolute; width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 7px solid var(--accent-2);
+    top: -8px;
+  }
+  .bus-icon.picked .arrow { border-bottom-color: var(--accent); }
+
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+  .leaflet-popup-tip { background: var(--panel); }
+  .popup-line1 { font-weight: 800; font-size: 15px; margin-bottom: 2px; }
+  .popup-line2 { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="hud">
+  <div id="title-card" class="panel">
+    <h1>Nysse · Live</h1>
+    <div class="sub"><span id="status-dot" class="dot pulse"></span><span id="status-text">yhdistetään…</span></div>
+  </div>
+  <div id="filter-card" class="panel">
+    <input id="filter-input" type="text" placeholder="Suodata linja (esim. 3, 8B, 21) — tyhjä = kaikki" />
+    <div id="route-chips"></div>
+  </div>
+</div>
+
+<div id="stats">
+  <span>Ajoneuvoja: <b id="stat-count">0</b></span>
+  <span>Linjoja: <b id="stat-routes">0</b></span>
+  <span>Päivitetty: <b id="stat-time">–</b></span>
+</div>
+
+<div id="err"></div>
+
+<script>
+const FEED_URL = "https://data.itsfactory.fi/journeys/api/1/gtfs-rt/vehicle-positions/json";
+const POLL_MS = 5000;
+const TAMPERE_CENTER = [61.4978, 23.7610];
+
+const map = L.map('map', { zoomControl: true, attributionControl: true }).setView(TAMPERE_CENTER, 12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap &copy; CARTO · Bussidata: Tampereen joukkoliikenne / ITS Factory',
+  maxZoom: 19
+}).addTo(map);
+
+const markers = new Map(); // vehicle id -> {marker, lastSeen}
+let selectedRoutes = new Set();
+let filterText = "";
+let lastFetchOk = null;
+
+function routeColorSeed(routeId) {
+  // deterministic hue from route id string, used only for chip emphasis if needed later
+  let h = 0;
+  for (let i = 0; i < routeId.length; i++) h = (h * 31 + routeId.charCodeAt(i)) % 360;
+  return h;
+}
+
+function makeIcon(routeId, bearing, picked) {
+  const html = `
+    <div class="bus-icon ${picked ? 'picked' : ''}" style="transform: rotate(${bearing || 0}deg);">
+      <div class="arrow"></div>
+      <span style="transform: rotate(${-(bearing || 0)}deg);">${routeId}</span>
+    </div>`;
+  return L.divIcon({ html, className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-14] });
+}
+
+function passesFilter(routeId) {
+  if (selectedRoutes.size > 0) return selectedRoutes.has(routeId);
+  if (filterText) return routeId.toLowerCase().includes(filterText.toLowerCase());
+  return true;
+}
+
+function setStatus(ok, msg) {
+  const dot = document.getElementById('status-dot');
+  const txt = document.getElementById('status-text');
+  const err = document.getElementById('err');
+  if (ok) {
+    dot.classList.remove('stale');
+    dot.classList.add('pulse');
+    txt.textContent = msg || "live";
+    err.style.display = 'none';
+  } else {
+    dot.classList.remove('pulse');
+    dot.classList.add('stale');
+    txt.textContent = "yhteysongelma";
+    err.textContent = msg || "Rajapintaan ei saada yhteyttä.";
+    err.style.display = 'block';
+  }
+}
+
+function rebuildChips(allRoutes) {
+  const container = document.getElementById('route-chips');
+  const sorted = Array.from(allRoutes).sort((a,b) => {
+    const na = parseInt(a), nb = parseInt(b);
+    if (!isNaN(na) && !isNaN(nb) && na !== nb) return na - nb;
+    return a.localeCompare(b, 'fi');
+  });
+  container.innerHTML = '';
+  sorted.forEach(r => {
+    const chip = document.createElement('div');
+    chip.className = 'chip' + (selectedRoutes.has(r) ? ' on' : '');
+    chip.textContent = r;
+    chip.onclick = () => {
+      if (selectedRoutes.has(r)) selectedRoutes.delete(r);
+      else selectedRoutes.add(r);
+      applyFilterToMarkers();
+      rebuildChips(allRoutes);
+    };
+    container.appendChild(chip);
+  });
+}
+
+function applyFilterToMarkers() {
+  markers.forEach(({marker, routeId}) => {
+    const show = passesFilter(routeId);
+    const el = marker.getElement();
+    if (el) el.style.display = show ? '' : 'none';
+  });
+}
+
+async function poll() {
+  try {
+    const res = await fetch(FEED_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const entities = data.entity || [];
+    const seenIds = new Set();
+    const allRoutes = new Set();
+
+    entities.forEach(ent => {
+      const v = ent.vehicle;
+      if (!v || !v.position || !v.vehicle) return;
+      const id = v.vehicle.id;
+      const routeId = (v.trip && v.trip.route_id) ? v.trip.route_id : '?';
+      const lat = v.position.latitude;
+      const lon = v.position.longitude;
+      const bearing = v.position.bearing || 0;
+      if (lat == null || lon == null) return;
+
+      seenIds.add(id);
+      allRoutes.add(routeId);
+
+      const picked = selectedRoutes.has(routeId);
+      const existing = markers.get(id);
+
+      if (existing) {
+        existing.marker.setLatLng([lat, lon]);
+        existing.marker.setIcon(makeIcon(routeId, bearing, picked));
+        existing.routeId = routeId;
+        existing.lastSeen = Date.now();
+        const el = existing.marker.getElement();
+        if (el) el.style.display = passesFilter(routeId) ? '' : 'none';
+        existing.marker.setPopupContent(popupHtml(routeId, id, v.trip));
+      } else {
+        const marker = L.marker([lat, lon], { icon: makeIcon(routeId, bearing, picked) }).addTo(map);
+        marker.bindPopup(popupHtml(routeId, id, v.trip));
+        markers.set(id, { marker, routeId, lastSeen: Date.now() });
+        const el = marker.getElement();
+        if (el) el.style.display = passesFilter(routeId) ? '' : 'none';
+      }
+    });
+
+    // remove vehicles no longer present
+    markers.forEach((val, id) => {
+      if (!seenIds.has(id)) {
+        map.removeLayer(val.marker);
+        markers.delete(id);
+      }
+    });
+
+    document.getElementById('stat-count').textContent = seenIds.size;
+    document.getElementById('stat-routes').textContent = allRoutes.size;
+    document.getElementById('stat-time').textContent = new Date().toLocaleTimeString('fi-FI');
+
+    rebuildChips(allRoutes);
+    setStatus(true, 'live · päivitys ' + (POLL_MS/1000) + ' s');
+    lastFetchOk = true;
+  } catch (e) {
+    setStatus(false, 'Rajapintaan ei saada yhteyttä (' + e.message + ')');
+    lastFetchOk = false;
+  }
+}
+
+function popupHtml(routeId, vehicleId, trip) {
+  const start = trip ? (trip.start_time || '') : '';
+  return `<div class="popup-line1">Linja ${routeId}</div>
+          <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>`;
+}
+
+document.getElementById('filter-input').addEventListener('input', (e) => {
+  filterText = e.target.value.trim();
+  if (filterText) { selectedRoutes.clear(); rebuildChips(new Set(Array.from(markers.values()).map(m => m.routeId))); }
+  applyFilterToMarkers();
+});
+
+poll();
+setInterval(poll, POLL_MS);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+}
+</script>
+
+</body>
+</html>
