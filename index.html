@@ -105,11 +105,12 @@
     display:none; max-width: 320px;
   }
 
-  /* Smooth motion: Leaflet updates this element's transform on every setLatLng, so a
-     CSS transition on it turns discrete 5s position updates into a continuous glide.
-     Interaction (pan/zoom) toggles .no-anim so gestures stay instant. */
-  .leaflet-marker-icon { transition: transform 4.5s linear, opacity 0.35s ease; will-change: transform; }
-  .leaflet-marker-icon.no-anim { transition: none !important; }
+  /* Position and rotation are animated by a JS rAF loop (see tickMarkerAnimations),
+     not CSS transitions: Leaflet's marker transform is zoom-dependent pixel math,
+     so a CSS transition frozen mid-flight by a zoom change interpolates stale,
+     wrong-zoom pixels and visibly "floats". Driving real lat/lon + rotation values
+     every frame lets Leaflet re-project correctly regardless of what the map does. */
+  .leaflet-marker-icon { transition: opacity 0.35s ease; will-change: transform; }
 
   .bus-icon {
     width: 22px; height: 22px; border-radius: 50%;
@@ -118,9 +119,8 @@
     font-family: var(--mono); font-weight:800; font-size: 9px; color: #06282b;
     box-shadow: 0 0 0 2px rgba(53,194,193,0.25);
     transform-origin: center center;
-    transition: transform 1.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
   }
-  .no-anim .bus-icon, .no-anim .bus-icon .label { transition: none !important; }
   .bus-icon.picked { background: var(--accent); box-shadow: 0 0 0 3px rgba(255,180,0,0.35); }
   .bus-icon .arrow {
     position:absolute; width: 0; height: 0;
@@ -129,7 +129,7 @@
     top: -8px; transition: border-bottom-color 0.2s ease;
   }
   .bus-icon.picked .arrow { border-bottom-color: var(--accent); }
-  .bus-icon .label { display: inline-block; transition: transform 1.2s ease; }
+  .bus-icon .label { display: inline-block; }
 
   .user-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--user-blue); border: 2px solid #fff; box-shadow: 0 0 0 2px rgba(59,130,246,0.35); }
 
@@ -194,20 +194,7 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
   maxZoom: 19
 }).addTo(map);
 
-// Pause marker transitions during user gestures so panning/zooming stays instant,
-// then let the next poll's positions glide in smoothly again.
-let animSuspended = false;
-function setAnimSuspended(suspended) {
-  animSuspended = suspended;
-  markers.forEach(({ marker }) => {
-    const el = marker.getElement();
-    if (el) el.classList.toggle('no-anim', suspended);
-  });
-}
-map.on('zoomstart movestart', () => setAnimSuspended(true));
-map.on('zoomend moveend', () => setAnimSuspended(false));
-
-const markers = new Map(); // vehicle id -> {marker, routeId, lastSeen, iconEl, labelEl, rotation, trip}
+const markers = new Map(); // vehicle id -> {marker, routeId, lastSeen, iconEl, labelEl, rotation, trip, animating, anim*}
 const SELECTED_ROUTES_KEY = 'nysse-live:selected-routes';
 function loadSelectedRoutes() {
   try {
@@ -434,7 +421,7 @@ function createMarker(id, routeId, lat, lon, bearing, trip) {
   const picked = selectedRoutes.has(routeId);
   const icon = L.divIcon({ html: buildIconHtml(routeId, picked), className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-14] });
   const marker = L.marker([lat, lon], { icon }).addTo(map);
-  const entry = { marker, routeId, lastSeen: Date.now(), rotation: bearing, trip };
+  const entry = { marker, routeId, lastSeen: Date.now(), rotation: bearing, trip, animating: false };
   marker.bindPopup(() => popupHtml(entry, id));
 
   const el = marker.getElement();
@@ -444,24 +431,30 @@ function createMarker(id, routeId, lat, lon, bearing, trip) {
   entry.labelEl.style.transform = `rotate(${-bearing}deg)`;
   el.style.display = passesFilter(routeId) ? '' : 'none';
 
-  // Fade the marker in instead of popping in at full opacity; skip the entry
-  // animation for the very first placement so it doesn't glide in from (0,0).
-  el.classList.add('no-anim');
+  // Fade the marker in instead of popping in at full opacity.
   el.style.opacity = '0';
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    el.classList.toggle('no-anim', animSuspended);
-    el.style.opacity = '1';
-  }));
+  requestAnimationFrame(() => requestAnimationFrame(() => { el.style.opacity = '1'; }));
 
   markers.set(id, entry);
 }
 
+// Position and rotation are never set directly from a poll response — instead
+// each update just records where the marker should END UP, and the shared
+// tickMarkerAnimations loop below moves it there frame by frame. Real lat/lon
+// (not CSS transform) drives the motion, so Leaflet always re-projects it
+// correctly no matter what the map is doing (panning, zooming, recentering).
 function updateMarker(entry, id, routeId, lat, lon, bearing, trip) {
-  entry.marker.setLatLng([lat, lon]);
-  const newRotation = shortestRotation(entry.rotation, bearing);
-  entry.rotation = newRotation;
-  entry.iconEl.style.transform = `rotate(${newRotation}deg)`;
-  entry.labelEl.style.transform = `rotate(${-newRotation}deg)`;
+  const cur = entry.marker.getLatLng();
+  entry.animFromLat = cur.lat;
+  entry.animFromLon = cur.lng;
+  entry.animToLat = lat;
+  entry.animToLon = lon;
+  entry.animFromRotation = entry.rotation;
+  entry.animToRotation = shortestRotation(entry.rotation, bearing);
+  entry.animStart = performance.now();
+  entry.animDuration = POLL_MS;
+  entry.animating = true;
+
   entry.trip = trip;
   entry.lastSeen = Date.now();
   if (entry.routeId !== routeId) {
@@ -473,7 +466,25 @@ function updateMarker(entry, id, routeId, lat, lon, bearing, trip) {
   if (el) el.style.display = passesFilter(routeId) ? '' : 'none';
 }
 
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function tickMarkerAnimations() {
+  const now = performance.now();
+  markers.forEach(entry => {
+    if (!entry.animating) return;
+    const t = Math.min(1, (now - entry.animStart) / entry.animDuration);
+    entry.rotation = lerp(entry.animFromRotation, entry.animToRotation, t);
+    entry.marker.setLatLng([lerp(entry.animFromLat, entry.animToLat, t), lerp(entry.animFromLon, entry.animToLon, t)]);
+    entry.iconEl.style.transform = `rotate(${entry.rotation}deg)`;
+    entry.labelEl.style.transform = `rotate(${-entry.rotation}deg)`;
+    if (t >= 1) entry.animating = false;
+  });
+  requestAnimationFrame(tickMarkerAnimations);
+}
+requestAnimationFrame(tickMarkerAnimations);
+
 function removeMarker(entry) {
+  entry.animating = false;
   const el = entry.marker.getElement();
   if (el) el.style.opacity = '0';
   setTimeout(() => map.removeLayer(entry.marker), 400);
