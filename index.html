@@ -37,9 +37,16 @@
 
   #hud {
     position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px;
-    z-index: 1000; display: flex; gap: 8px; align-items: flex-start;
+    z-index: 1000; display: flex; flex-direction: column; gap: 8px;
     pointer-events: none;
   }
+  #hud-top { display: flex; gap: 8px; align-items: flex-start; }
+  #alerts-banner {
+    display: none; pointer-events: auto; text-align: left; cursor: pointer;
+    padding: 9px 12px; font-family: var(--mono); font-size: 12px; font-weight: 700;
+    color: #3a2c00; background: var(--accent); border: none; border-radius: 10px;
+  }
+  #alerts-banner:active { filter: brightness(0.95); }
   .panel {
     pointer-events: auto;
     /* Solid background, no backdrop-filter: blurring the map live underneath
@@ -161,24 +168,26 @@
   .popup-btn:active { background: var(--line); }
   .popup-btn.fav-on { border-color: var(--accent); color: var(--accent); }
 
-  #route-panel {
+  /* Shared bottom-sheet chrome for both the bus route panel and the alerts panel. */
+  .sheet-panel {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 1200;
     max-height: 55vh; display: none; flex-direction: column;
     border-radius: 14px 14px 0 0; border-bottom: none;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
-  #route-panel-header {
+  .sheet-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px 10px; border-bottom: 1px solid var(--line); flex: 0 0 auto;
   }
-  #route-panel-title { font-weight: 800; font-size: 14px; }
-  #route-panel-close {
+  .sheet-title { font-weight: 800; font-size: 14px; }
+  .sheet-close {
     width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line);
     background: var(--panel-2); color: var(--text); font-size: 18px; line-height: 1;
     cursor: pointer; flex: 0 0 auto;
   }
-  #route-panel-close:active { background: var(--line); }
-  #route-panel-list { overflow-y: auto; padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .sheet-close:active { background: var(--line); }
+  .sheet-list { overflow-y: auto; padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 2px; }
+
   .route-stop-row {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     font-family: var(--mono); font-size: 12px; padding: 7px 0; border-bottom: 1px dashed var(--line);
@@ -186,6 +195,11 @@
   .route-stop-row:last-child { border-bottom: none; }
   .route-stop-name { color: var(--text); }
   .route-stop-eta { color: var(--accent-2); font-weight: 700; white-space: nowrap; }
+
+  .alert-row { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+  .alert-row:last-child { border-bottom: none; }
+  .alert-title { font-family: var(--mono); font-weight: 800; font-size: 12px; color: var(--text); margin-bottom: 2px; }
+  .alert-desc { font-family: var(--mono); font-size: 11px; color: var(--dim); line-height: 1.4; }
 
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
@@ -196,17 +210,20 @@
 <div id="map"></div>
 
 <div id="hud">
-  <div id="title-card" class="panel">
-    <h1>Nysse · Live</h1>
-    <div class="sub"><span id="status-dot" class="dot pulse"></span><span id="status-text">yhdistetään…</span></div>
-  </div>
-  <div id="filter-card" class="panel">
-    <div id="filter-row">
-      <input id="filter-input" type="text" inputmode="search" placeholder="Suodata linja (esim. 3, 8B, 21) — tyhjä = kaikki" />
-      <button id="filter-clear" aria-label="Tyhjennä suodatin">×</button>
+  <div id="hud-top">
+    <div id="title-card" class="panel">
+      <h1>Nysse · Live</h1>
+      <div class="sub"><span id="status-dot" class="dot pulse"></span><span id="status-text">yhdistetään…</span></div>
     </div>
-    <div id="route-chips"></div>
+    <div id="filter-card" class="panel">
+      <div id="filter-row">
+        <input id="filter-input" type="text" inputmode="search" placeholder="Suodata linja (esim. 3, 8B, 21) — tyhjä = kaikki" />
+        <button id="filter-clear" aria-label="Tyhjennä suodatin">×</button>
+      </div>
+      <div id="route-chips"></div>
+    </div>
   </div>
+  <button id="alerts-banner" type="button"></button>
 </div>
 
 <div id="map-controls">
@@ -222,20 +239,30 @@
 
 <div id="err"></div>
 
-<div id="route-panel" class="panel">
-  <div id="route-panel-header">
-    <div id="route-panel-title"></div>
-    <button id="route-panel-close" aria-label="Sulje">×</button>
+<div id="route-panel" class="panel sheet-panel">
+  <div class="sheet-header">
+    <div id="route-panel-title" class="sheet-title"></div>
+    <button id="route-panel-close" class="sheet-close" aria-label="Sulje">×</button>
   </div>
-  <div id="route-panel-list"></div>
+  <div id="route-panel-list" class="sheet-list"></div>
+</div>
+
+<div id="alerts-panel" class="panel sheet-panel">
+  <div class="sheet-header">
+    <div class="sheet-title">Häiriötiedotteet</div>
+    <button id="alerts-panel-close" class="sheet-close" aria-label="Sulje">×</button>
+  </div>
+  <div id="alerts-panel-list" class="sheet-list"></div>
 </div>
 
 <script>
 const FEED_URL = "https://data.itsfactory.fi/journeys/api/1/gtfs-rt/vehicle-positions/json";
 const STOPS_URL = "https://data.itsfactory.fi/journeys/api/1/stop-points";
 const VEHICLE_ACTIVITY_URL = "https://data.itsfactory.fi/journeys/api/1/vehicle-activity";
+const SERVICE_ALERTS_URL = "https://data.itsfactory.fi/journeys/api/1/gtfs-rt/service-alerts/json";
 const POLL_MS = 5000;
 const ARRIVALS_POLL_MS = 15000;
+const ALERTS_POLL_MS = 60000;
 const STOP_MIN_ZOOM = 15;
 const TAMPERE_CENTER = [61.4978, 23.7610];
 // SW/NE corners padded a bit around Finland's mainland — Nysse only runs in
@@ -281,6 +308,14 @@ function shortestRotation(fromDeg, toDeg) {
   return fromDeg + delta;
 }
 
+// Route/stop codes come from a small, structured vocabulary and are safe as
+// used elsewhere, but alert text and resolved stop names are free-form
+// content from an external feed, so they get escaped before going into
+// innerHTML.
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
 function buildIconHtml(routeId, picked) {
   return `<div class="bus-icon ${picked ? 'picked' : ''}">
       <div class="arrow"></div>
@@ -288,10 +323,57 @@ function buildIconHtml(routeId, picked) {
     </div>`;
 }
 
+const OCCUPANCY_LABELS = {
+  EMPTY: 'Tyhjä',
+  MANY_SEATS_AVAILABLE: 'Tilaa hyvin',
+  FEW_SEATS_AVAILABLE: 'Muutama paikka vapaana',
+  STANDING_ROOM_ONLY: 'Vain seisomapaikkoja',
+  CRUSHED_STANDING_ROOM_ONLY: 'Täynnä, hyvin ahdasta',
+  FULL: 'Täynnä',
+  NOT_ACCEPTING_PASSENGERS: 'Ei ota matkustajia',
+};
+
+// SIRI's delay is normally an ISO-8601 duration (e.g. "-PT1M30S" for running
+// early), but some feeds send it as a plain number of seconds — handle both
+// rather than assuming one and silently showing nothing (or garbage) for
+// the other.
+function parseIsoDurationSeconds(iso) {
+  if (typeof iso !== 'string') return null;
+  const m = iso.match(/^(-)?P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/);
+  if (!m || (!m[2] && !m[3] && !m[4])) return null;
+  const sign = m[1] ? -1 : 1;
+  return sign * (Number(m[2] || 0) * 3600 + Number(m[3] || 0) * 60 + Number(m[4] || 0));
+}
+function parseDelaySeconds(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const iso = parseIsoDurationSeconds(raw);
+    if (iso != null) return iso;
+    const num = Number(raw);
+    if (Number.isFinite(num)) return num;
+  }
+  return null;
+}
+function formatDelay(delaySec) {
+  if (delaySec == null) return null;
+  const mins = Math.round(Math.abs(delaySec) / 60);
+  if (mins === 0) return 'Ajallaan';
+  return mins + ' min ' + (delaySec > 0 ? 'myöhässä' : 'etuajassa');
+}
+
 function popupHtml(entry, vehicleId) {
   const start = entry.trip ? (entry.trip.start_time || '') : '';
+  const info = vehicleInfoByVehicle.get(vehicleId);
+  const destLine = info && info.destinationName
+    ? `<div class="popup-line2">→ ${escapeHtml(info.destinationName)}</div>` : '';
+  const delayText = info ? formatDelay(info.delaySec) : null;
+  const delayLine = delayText ? `<div class="popup-line2">${delayText}</div>` : '';
+  const occupancyLabel = OCCUPANCY_LABELS[entry.occupancy];
+  const occupancyLine = occupancyLabel ? `<div class="popup-line2">${occupancyLabel}</div>` : '';
   return `<div class="popup-line1">Linja ${entry.routeId}</div>
           <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>
+          ${destLine}${delayLine}${occupancyLine}
           <button class="popup-btn" onclick="showVehicleRoute('${vehicleId}', '${entry.routeId}')">Näytä tulevat pysäkit</button>`;
 }
 
@@ -307,6 +389,16 @@ let allStops = [];
 let stopsLoaded = false;
 let arrivalsByStop = new Map(); // stopId -> [{routeId, time, vehicleId}], soonest first
 let onwardCallsByVehicle = new Map(); // vehicleRef -> [{stopId, time}], soonest first
+let vehicleInfoByVehicle = new Map(); // vehicleRef -> {delaySec, destinationName, originName}
+
+// destinationShortName/originShortName in vehicle-activity are stop codes,
+// not readable names (confirmed against other Nysse client source) — resolve
+// them against the stop-points list we already load, no extra request needed.
+function resolveStopName(shortCode) {
+  if (!shortCode) return null;
+  const stop = allStops.find(s => s.id === shortCode);
+  return stop ? stop.name : shortCode;
+}
 
 const FAVORITE_STOPS_KEY = 'nysse-live:favorite-stops';
 function loadFavoriteStops() {
@@ -378,7 +470,7 @@ function stopPopupHtml(stop) {
   const rows = arrivals.length
     ? arrivals.map(a => `<div class="stop-arrival"><span class="stop-arrival-route">${a.routeId}</span><span class="stop-arrival-time">${formatEta(a.time)}</span></div>`).join('')
     : '<div class="stop-arrival-empty">Ei tiedossa saapumisia</div>';
-  return `<div class="popup-line1">${stop.name}</div>
+  return `<div class="popup-line1">${escapeHtml(stop.name)}</div>
           <div class="popup-line2">Pysäkki ${stop.id}</div>
           <div class="stop-arrivals">${rows}</div>
           <button class="popup-btn${isFav ? ' fav-on' : ''}" onclick="toggleFavoriteStop('${stop.id}')">${isFav ? '★ Poista suosikeista' : '☆ Lisää suosikiksi'}</button>`;
@@ -439,34 +531,116 @@ function refreshOpenStopPopups() {
 }
 
 let openVehiclePanelId = null;
+let vehicleRouteLine = null;
 
 function vehiclePanelHtml(vehicleId) {
   const calls = onwardCallsByVehicle.get(vehicleId) || [];
   if (!calls.length) return '<div class="stop-arrival-empty">Ei tiedossa pysäkkiaikatauluja tälle ajoneuvolle.</div>';
   return calls.map(c => {
-    const stop = allStops.find(s => s.id === c.stopId);
-    const name = stop ? stop.name : ('Pysäkki ' + c.stopId);
-    return `<div class="route-stop-row"><span class="route-stop-name">${name}</span><span class="route-stop-eta">${formatEta(c.time)}</span></div>`;
+    const name = resolveStopName(c.stopId) || ('Pysäkki ' + c.stopId);
+    return `<div class="route-stop-row"><span class="route-stop-name">${escapeHtml(name)}</span><span class="route-stop-eta">${formatEta(c.time)}</span></div>`;
   }).join('');
 }
 
+function drawVehicleRouteLine(vehicleId) {
+  removeVehicleRouteLine();
+  const calls = onwardCallsByVehicle.get(vehicleId) || [];
+  const points = calls
+    .map(c => allStops.find(s => s.id === c.stopId))
+    .filter(Boolean)
+    .map(s => [s.lat, s.lon]);
+  if (points.length < 2) return;
+  vehicleRouteLine = L.polyline(points, { color: '#ffb400', weight: 4, opacity: 0.8, dashArray: '1 9', lineCap: 'round' }).addTo(map);
+}
+
+function removeVehicleRouteLine() {
+  if (vehicleRouteLine) { map.removeLayer(vehicleRouteLine); vehicleRouteLine = null; }
+}
+
 function showVehicleRoute(vehicleId, routeId) {
+  closeAlertsPanel();
   openVehiclePanelId = vehicleId;
   document.getElementById('route-panel-title').textContent = 'Linja ' + routeId + ' · tulevat pysäkit';
   document.getElementById('route-panel-list').innerHTML = vehiclePanelHtml(vehicleId);
   document.getElementById('route-panel').style.display = 'flex';
+  drawVehicleRouteLine(vehicleId);
 }
 
 function closeVehicleRoute() {
   openVehiclePanelId = null;
   document.getElementById('route-panel').style.display = 'none';
+  removeVehicleRouteLine();
 }
 document.getElementById('route-panel-close').addEventListener('click', closeVehicleRoute);
 
 function refreshOpenVehiclePanel() {
   if (!openVehiclePanelId) return;
   document.getElementById('route-panel-list').innerHTML = vehiclePanelHtml(openVehiclePanelId);
+  drawVehicleRouteLine(openVehiclePanelId);
 }
+
+// --- Service alerts -----------------------------------------------------
+function alertActivePeriodCovers(periods, nowSec) {
+  if (!periods || !periods.length) return true; // GTFS-RT: no active_period means always active
+  return periods.some(p => {
+    const start = p.start != null ? Number(p.start) : -Infinity;
+    const end = p.end != null ? Number(p.end) : Infinity;
+    return nowSec >= start && nowSec <= end;
+  });
+}
+function pickTranslation(field) {
+  if (!field || !Array.isArray(field.translation)) return '';
+  const fi = field.translation.find(t => t.language === 'fi');
+  return (fi || field.translation[0] || {}).text || '';
+}
+
+let activeAlerts = [];
+
+async function pollServiceAlerts() {
+  try {
+    const res = await fetch(SERVICE_ALERTS_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const nowSec = Date.now() / 1000;
+    activeAlerts = (data.entity || [])
+      .map(ent => ent.alert)
+      .filter(Boolean)
+      .filter(alert => alertActivePeriodCovers(alert.active_period, nowSec))
+      .map(alert => ({ title: pickTranslation(alert.header_text), description: pickTranslation(alert.description_text) }))
+      .filter(a => a.title);
+    renderAlertsBanner();
+    if (document.getElementById('alerts-panel').style.display === 'flex') {
+      document.getElementById('alerts-panel-list').innerHTML = alertsPanelHtml();
+    }
+  } catch (e) {
+    console.error('Häiriötiedotteiden haku epäonnistui', e);
+  }
+}
+
+function renderAlertsBanner() {
+  const banner = document.getElementById('alerts-banner');
+  if (!activeAlerts.length) { banner.style.display = 'none'; return; }
+  banner.style.display = 'block';
+  banner.textContent = '⚠ ' + activeAlerts.length + (activeAlerts.length === 1 ? ' häiriötiedote' : ' häiriötiedotetta') + ' — ' + activeAlerts[0].title;
+}
+
+function alertsPanelHtml() {
+  if (!activeAlerts.length) return '<div class="stop-arrival-empty">Ei aktiivisia häiriötiedotteita.</div>';
+  return activeAlerts.map(a => `<div class="alert-row"><div class="alert-title">${escapeHtml(a.title)}</div>${a.description ? `<div class="alert-desc">${escapeHtml(a.description)}</div>` : ''}</div>`).join('');
+}
+
+function showAlertsPanel() {
+  closeVehicleRoute();
+  document.getElementById('alerts-panel-list').innerHTML = alertsPanelHtml();
+  document.getElementById('alerts-panel').style.display = 'flex';
+}
+
+function closeAlertsPanel() {
+  document.getElementById('alerts-panel').style.display = 'none';
+}
+
+document.getElementById('alerts-banner').addEventListener('click', showAlertsPanel);
+document.getElementById('alerts-panel-close').addEventListener('click', closeAlertsPanel);
 
 async function pollArrivals() {
   try {
@@ -476,12 +650,21 @@ async function pollArrivals() {
     const entries = data.body || [];
     const nextByStop = new Map();
     const nextByVehicle = new Map();
+    const nextVehicleInfo = new Map();
     const now = Date.now();
     entries.forEach(v => {
       const mvj = v.monitoredVehicleJourney;
-      if (!mvj || !Array.isArray(mvj.onwardCalls)) return;
-      const routeId = mvj.lineRef || '?';
+      if (!mvj) return;
       const vehicleRef = mvj.vehicleRef;
+      if (vehicleRef) {
+        nextVehicleInfo.set(vehicleRef, {
+          delaySec: parseDelaySeconds(mvj.delay),
+          destinationName: resolveStopName(mvj.destinationShortName),
+          originName: resolveStopName(mvj.originShortName),
+        });
+      }
+      if (!Array.isArray(mvj.onwardCalls)) return;
+      const routeId = mvj.lineRef || '?';
       const vehicleCalls = [];
       mvj.onwardCalls.forEach(call => {
         const stopId = (call.stopPointRef || '').split('/').filter(Boolean).pop();
@@ -501,6 +684,7 @@ async function pollArrivals() {
     nextByStop.forEach(list => list.sort((a, b) => a.time - b.time));
     arrivalsByStop = nextByStop;
     onwardCallsByVehicle = nextByVehicle;
+    vehicleInfoByVehicle = nextVehicleInfo;
     // Keep an already-open popup/panel's countdown fresh instead of making
     // the rider close and reopen it to see updated arrival times.
     refreshOpenStopPopups();
@@ -589,11 +773,11 @@ function applyPickedHighlight() {
   });
 }
 
-function createMarker(id, routeId, lat, lon, bearing, trip) {
+function createMarker(id, routeId, lat, lon, bearing, trip, occupancy) {
   const picked = selectedRoutes.has(routeId);
   const icon = L.divIcon({ html: buildIconHtml(routeId, picked), className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-14] });
   const marker = L.marker([lat, lon], { icon }).addTo(map);
-  const entry = { marker, routeId, lastSeen: Date.now(), rotation: bearing, trip, animating: false };
+  const entry = { marker, routeId, lastSeen: Date.now(), rotation: bearing, trip, occupancy, animating: false };
   marker.bindPopup(() => popupHtml(entry, id));
 
   const el = marker.getElement();
@@ -615,7 +799,7 @@ function createMarker(id, routeId, lat, lon, bearing, trip) {
 // tickMarkerAnimations loop below moves it there frame by frame. Real lat/lon
 // (not CSS transform) drives the motion, so Leaflet always re-projects it
 // correctly no matter what the map is doing (panning, zooming, recentering).
-function updateMarker(entry, id, routeId, lat, lon, bearing, trip) {
+function updateMarker(entry, id, routeId, lat, lon, bearing, trip, occupancy) {
   const cur = entry.marker.getLatLng();
   entry.animFromLat = cur.lat;
   entry.animFromLon = cur.lng;
@@ -628,6 +812,7 @@ function updateMarker(entry, id, routeId, lat, lon, bearing, trip) {
   entry.animating = true;
 
   entry.trip = trip;
+  entry.occupancy = occupancy;
   entry.lastSeen = Date.now();
   if (entry.routeId !== routeId) {
     entry.routeId = routeId;
@@ -694,6 +879,10 @@ async function poll() {
       const lat = v.position.latitude;
       const lon = v.position.longitude;
       const bearing = v.position.bearing || 0;
+      // Only present for vehicles with passenger counting hardware — most
+      // won't have it, so this is read defensively and just omitted from
+      // the popup (via OCCUPANCY_LABELS) when absent or unrecognized.
+      const occupancy = v.occupancy_status;
       if (lat == null || lon == null) return;
 
       seenIds.add(id);
@@ -701,9 +890,9 @@ async function poll() {
 
       const existing = markers.get(id);
       if (existing) {
-        updateMarker(existing, id, routeId, lat, lon, bearing, v.trip);
+        updateMarker(existing, id, routeId, lat, lon, bearing, v.trip, occupancy);
       } else {
-        createMarker(id, routeId, lat, lon, bearing, v.trip);
+        createMarker(id, routeId, lat, lon, bearing, v.trip, occupancy);
       }
     });
 
@@ -799,6 +988,9 @@ setInterval(poll, POLL_MS);
 loadStops();
 pollArrivals();
 setInterval(pollArrivals, ARRIVALS_POLL_MS);
+
+pollServiceAlerts();
+setInterval(pollServiceAlerts, ALERTS_POLL_MS);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
