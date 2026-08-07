@@ -144,6 +144,40 @@
   .stop-arrival-time { color: var(--accent-2); font-weight: 700; }
   .stop-arrival-empty { font-family: var(--mono); font-size: 11px; color: var(--dim); }
 
+  .popup-btn {
+    margin-top: 8px; width: 100%; padding: 7px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+    font-family: var(--mono); font-size: 11px; cursor: pointer; text-align: center;
+  }
+  .popup-btn:active { background: var(--line); }
+  .popup-btn.fav-on { border-color: var(--accent); color: var(--accent); }
+
+  #route-panel {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 1200;
+    max-height: 55vh; display: none; flex-direction: column;
+    border-radius: 14px 14px 0 0; border-bottom: none;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  #route-panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px 10px; border-bottom: 1px solid var(--line); flex: 0 0 auto;
+  }
+  #route-panel-title { font-weight: 800; font-size: 14px; }
+  #route-panel-close {
+    width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); font-size: 18px; line-height: 1;
+    cursor: pointer; flex: 0 0 auto;
+  }
+  #route-panel-close:active { background: var(--line); }
+  #route-panel-list { overflow-y: auto; padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .route-stop-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    font-family: var(--mono); font-size: 12px; padding: 7px 0; border-bottom: 1px dashed var(--line);
+  }
+  .route-stop-row:last-child { border-bottom: none; }
+  .route-stop-name { color: var(--text); }
+  .route-stop-eta { color: var(--accent-2); font-weight: 700; white-space: nowrap; }
+
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 </style>
@@ -179,6 +213,14 @@
 
 <div id="err"></div>
 
+<div id="route-panel" class="panel">
+  <div id="route-panel-header">
+    <div id="route-panel-title"></div>
+    <button id="route-panel-close" aria-label="Sulje">×</button>
+  </div>
+  <div id="route-panel-list"></div>
+</div>
+
 <script>
 const FEED_URL = "https://data.itsfactory.fi/journeys/api/1/gtfs-rt/vehicle-positions/json";
 const STOPS_URL = "https://data.itsfactory.fi/journeys/api/1/stop-points";
@@ -187,11 +229,24 @@ const POLL_MS = 5000;
 const ARRIVALS_POLL_MS = 15000;
 const STOP_MIN_ZOOM = 15;
 const TAMPERE_CENTER = [61.4978, 23.7610];
+// SW/NE corners padded a bit around Finland's mainland — Nysse only runs in
+// Tampere, but this keeps panning/zooming from wandering off into fetching
+// tiles for the rest of the planet.
+const FINLAND_BOUNDS = [[59.0, 18.5], [70.5, 32.0]];
 
-const map = L.map('map', { zoomControl: true, attributionControl: true, fadeAnimation: true, preferCanvas: true }).setView(TAMPERE_CENTER, 12);
+const map = L.map('map', {
+  zoomControl: true, attributionControl: true, fadeAnimation: true, preferCanvas: true,
+  minZoom: 6, maxBounds: FINLAND_BOUNDS, maxBoundsViscosity: 1.0
+}).setView(TAMPERE_CENTER, 12);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; OpenStreetMap &copy; CARTO · Bussidata: Tampereen joukkoliikenne / ITS Factory',
-  maxZoom: 19
+  maxZoom: 19,
+  minZoom: 6,
+  keepBuffer: 4,
+  // Redraw tiles only once a zoom gesture settles instead of on every
+  // intermediate frame — this is what caused the map to look like it kept
+  // reloading while pinch-zooming or double-tapping.
+  updateWhenZooming: false
 }).addTo(map);
 
 const markers = new Map(); // vehicle id -> {marker, routeId, lastSeen, iconEl, labelEl, rotation, trip, animating, anim*}
@@ -227,7 +282,8 @@ function buildIconHtml(routeId, picked) {
 function popupHtml(entry, vehicleId) {
   const start = entry.trip ? (entry.trip.start_time || '') : '';
   return `<div class="popup-line1">Linja ${entry.routeId}</div>
-          <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>`;
+          <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>
+          <button class="popup-btn" onclick="showVehicleRoute('${vehicleId}', '${entry.routeId}')">Näytä tulevat pysäkit</button>`;
 }
 
 // --- Stops + per-stop arrival predictions -----------------------------
@@ -235,12 +291,53 @@ function popupHtml(entry, vehicleId) {
 // Arrival predictions come from vehicle-activity's onwardCalls, which list
 // every upcoming stop for every active vehicle with an expected time —
 // polled separately (and less often) from the bus-position feed so a
-// hiccup in one never affects the other.
+// hiccup in one never affects the other. The same onwardCalls also get
+// regrouped by vehicle instead of by stop, powering the "show this bus's
+// upcoming stops" panel.
 let allStops = [];
 let stopsLoaded = false;
 let arrivalsByStop = new Map(); // stopId -> [{routeId, time, vehicleId}], soonest first
-const stopMarkers = new Map(); // stopId -> marker
+let onwardCallsByVehicle = new Map(); // vehicleRef -> [{stopId, time}], soonest first
+
+const FAVORITE_STOPS_KEY = 'nysse-live:favorite-stops';
+function loadFavoriteStops() {
+  try {
+    const raw = localStorage.getItem(FAVORITE_STOPS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch (e) { return new Set(); }
+}
+function saveFavoriteStops() {
+  try { localStorage.setItem(FAVORITE_STOPS_KEY, JSON.stringify(Array.from(favoriteStops))); } catch (e) {}
+}
+let favoriteStops = loadFavoriteStops();
+
+// Every stop marker is really a pair: a small visual dot (non-interactive,
+// so it never steals the tap) plus a larger invisible circle underneath
+// that owns the popup — a 5px dot is a hopeless target on a phone, but a
+// visibly huge dot would clutter the map, so only the *hit area* is big.
+const stopMarkers = new Map(); // stopId -> {dot, hit}
 const stopLayer = L.layerGroup().addTo(map);
+// Favorites render on their own always-on layer (not gated by zoom/viewport
+// like regular stops), styled distinctly, so a rider's saved stops stay
+// findable without having to zoom all the way into that exact spot.
+const favoriteMarkers = new Map(); // stopId -> {dot, hit}
+const favoriteLayer = L.layerGroup().addTo(map);
+
+function createStopMarker(stop, layer, isFavorite) {
+  const dot = L.circleMarker([stop.lat, stop.lon], isFavorite
+    ? { radius: 7, weight: 3, color: '#3a2c00', fillColor: '#ffb400', fillOpacity: 1, interactive: false }
+    : { radius: 5, weight: 2, color: '#0b0f14', fillColor: '#dfe8f0', fillOpacity: 1, interactive: false });
+  const hit = L.circleMarker([stop.lat, stop.lon], { radius: 14, weight: 0, fillOpacity: 0, opacity: 0 });
+  hit.bindPopup(() => stopPopupHtml(stop), { maxWidth: 260 });
+  dot.addTo(layer);
+  hit.addTo(layer);
+  return { dot, hit };
+}
+
+function removeStopMarker(layer, entry) {
+  layer.removeLayer(entry.dot);
+  layer.removeLayer(entry.hit);
+}
 
 async function loadStops() {
   try {
@@ -252,6 +349,7 @@ async function loadStops() {
       return { id: s.shortName, name: s.name || s.shortName, lat, lon };
     }).filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
     stopsLoaded = true;
+    renderFavoriteStops();
     renderVisibleStops();
   } catch (e) {
     console.error('Pysäkkien haku epäonnistui', e);
@@ -266,41 +364,100 @@ function formatEta(time) {
 }
 
 function stopPopupHtml(stop) {
+  const isFav = favoriteStops.has(stop.id);
   const arrivals = (arrivalsByStop.get(stop.id) || []).slice(0, 8);
   const rows = arrivals.length
     ? arrivals.map(a => `<div class="stop-arrival"><span class="stop-arrival-route">${a.routeId}</span><span class="stop-arrival-time">${formatEta(a.time)}</span></div>`).join('')
     : '<div class="stop-arrival-empty">Ei tiedossa saapumisia</div>';
   return `<div class="popup-line1">${stop.name}</div>
           <div class="popup-line2">Pysäkki ${stop.id}</div>
-          <div class="stop-arrivals">${rows}</div>`;
+          <div class="stop-arrivals">${rows}</div>
+          <button class="popup-btn${isFav ? ' fav-on' : ''}" onclick="toggleFavoriteStop('${stop.id}')">${isFav ? '★ Poista suosikeista' : '☆ Lisää suosikiksi'}</button>`;
+}
+
+function renderFavoriteStops() {
+  if (!stopsLoaded) return;
+  favoriteMarkers.forEach((entry, id) => {
+    if (!favoriteStops.has(id)) { removeStopMarker(favoriteLayer, entry); favoriteMarkers.delete(id); }
+  });
+  favoriteStops.forEach(id => {
+    if (favoriteMarkers.has(id)) return;
+    const stop = allStops.find(s => s.id === id);
+    if (!stop) return; // stop-points not loaded yet; loadStops() re-renders once ready
+    favoriteMarkers.set(id, createStopMarker(stop, favoriteLayer, true));
+  });
+}
+
+function toggleFavoriteStop(stopId) {
+  if (favoriteStops.has(stopId)) favoriteStops.delete(stopId);
+  else favoriteStops.add(stopId);
+  saveFavoriteStops();
+  renderFavoriteStops();
+  renderVisibleStops();
+  const entry = favoriteMarkers.get(stopId) || stopMarkers.get(stopId);
+  if (entry) entry.hit.openPopup();
 }
 
 function renderVisibleStops() {
   if (!stopsLoaded) return;
   if (map.getZoom() < STOP_MIN_ZOOM) {
-    if (stopMarkers.size) { stopLayer.clearLayers(); stopMarkers.clear(); }
+    if (stopMarkers.size) { stopMarkers.forEach(entry => removeStopMarker(stopLayer, entry)); stopMarkers.clear(); }
     return;
   }
   const bounds = map.getBounds().pad(0.25);
   const visibleIds = new Set();
   allStops.forEach(s => {
+    if (favoriteStops.has(s.id)) return; // favorites live on their own always-visible layer
     if (!bounds.contains([s.lat, s.lon])) return;
     visibleIds.add(s.id);
     if (!stopMarkers.has(s.id)) {
-      const marker = L.circleMarker([s.lat, s.lon], {
-        radius: 5, weight: 2, color: '#0b0f14', fillColor: '#dfe8f0', fillOpacity: 1
-      });
-      marker.bindPopup(() => stopPopupHtml(s), { maxWidth: 260 });
-      marker.addTo(stopLayer);
-      stopMarkers.set(s.id, marker);
+      stopMarkers.set(s.id, createStopMarker(s, stopLayer, false));
     }
   });
   // drop stop markers that scrolled out of view
-  stopMarkers.forEach((marker, id) => {
-    if (!visibleIds.has(id)) { stopLayer.removeLayer(marker); stopMarkers.delete(id); }
+  stopMarkers.forEach((entry, id) => {
+    if (!visibleIds.has(id)) { removeStopMarker(stopLayer, entry); stopMarkers.delete(id); }
   });
 }
 map.on('moveend zoomend', renderVisibleStops);
+
+function refreshOpenStopPopups() {
+  [stopMarkers, favoriteMarkers].forEach(map => map.forEach((entry, id) => {
+    if (!entry.hit.isPopupOpen()) return;
+    const stop = allStops.find(s => s.id === id);
+    if (stop) entry.hit.setPopupContent(stopPopupHtml(stop));
+  }));
+}
+
+let openVehiclePanelId = null;
+
+function vehiclePanelHtml(vehicleId) {
+  const calls = onwardCallsByVehicle.get(vehicleId) || [];
+  if (!calls.length) return '<div class="stop-arrival-empty">Ei tiedossa pysäkkiaikatauluja tälle ajoneuvolle.</div>';
+  return calls.map(c => {
+    const stop = allStops.find(s => s.id === c.stopId);
+    const name = stop ? stop.name : ('Pysäkki ' + c.stopId);
+    return `<div class="route-stop-row"><span class="route-stop-name">${name}</span><span class="route-stop-eta">${formatEta(c.time)}</span></div>`;
+  }).join('');
+}
+
+function showVehicleRoute(vehicleId, routeId) {
+  openVehiclePanelId = vehicleId;
+  document.getElementById('route-panel-title').textContent = 'Linja ' + routeId + ' · tulevat pysäkit';
+  document.getElementById('route-panel-list').innerHTML = vehiclePanelHtml(vehicleId);
+  document.getElementById('route-panel').style.display = 'flex';
+}
+
+function closeVehicleRoute() {
+  openVehiclePanelId = null;
+  document.getElementById('route-panel').style.display = 'none';
+}
+document.getElementById('route-panel-close').addEventListener('click', closeVehicleRoute);
+
+function refreshOpenVehiclePanel() {
+  if (!openVehiclePanelId) return;
+  document.getElementById('route-panel-list').innerHTML = vehiclePanelHtml(openVehiclePanelId);
+}
 
 async function pollArrivals() {
   try {
@@ -308,31 +465,37 @@ async function pollArrivals() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const entries = data.body || [];
-    const next = new Map();
+    const nextByStop = new Map();
+    const nextByVehicle = new Map();
     const now = Date.now();
     entries.forEach(v => {
       const mvj = v.monitoredVehicleJourney;
       if (!mvj || !Array.isArray(mvj.onwardCalls)) return;
       const routeId = mvj.lineRef || '?';
+      const vehicleRef = mvj.vehicleRef;
+      const vehicleCalls = [];
       mvj.onwardCalls.forEach(call => {
         const stopId = (call.stopPointRef || '').split('/').filter(Boolean).pop();
         const t = call.expectedArrivalTime || call.aimedArrivalTime;
         if (!stopId || !t) return;
         const time = new Date(t);
         if (isNaN(time) || time.getTime() < now - 60000) return; // skip stale/past calls
-        if (!next.has(stopId)) next.set(stopId, []);
-        next.get(stopId).push({ routeId, time, vehicleId: mvj.vehicleRef });
+        if (!nextByStop.has(stopId)) nextByStop.set(stopId, []);
+        nextByStop.get(stopId).push({ routeId, time, vehicleId: vehicleRef });
+        vehicleCalls.push({ stopId, time });
       });
+      if (vehicleRef && vehicleCalls.length) {
+        vehicleCalls.sort((a, b) => a.time - b.time);
+        nextByVehicle.set(vehicleRef, vehicleCalls);
+      }
     });
-    next.forEach(list => list.sort((a, b) => a.time - b.time));
-    arrivalsByStop = next;
-    // Keep an already-open stop popup's countdown fresh instead of making
+    nextByStop.forEach(list => list.sort((a, b) => a.time - b.time));
+    arrivalsByStop = nextByStop;
+    onwardCallsByVehicle = nextByVehicle;
+    // Keep an already-open popup/panel's countdown fresh instead of making
     // the rider close and reopen it to see updated arrival times.
-    stopMarkers.forEach((marker, id) => {
-      if (!marker.isPopupOpen()) return;
-      const stop = allStops.find(s => s.id === id);
-      if (stop) marker.setPopupContent(stopPopupHtml(stop));
-    });
+    refreshOpenStopPopups();
+    refreshOpenVehiclePanel();
   } catch (e) {
     console.error('Saapumisennusteiden haku epäonnistui', e);
   }
