@@ -468,17 +468,32 @@ function updateMarker(entry, id, routeId, lat, lon, bearing, trip) {
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
+// Leaflet jumps map._pixelOrigin to the TARGET zoom's value right when a zoom
+// animation starts (not when it ends) and fakes the visual in-between purely
+// with a CSS transform on the map pane. A marker.setLatLng() call in that
+// window computes its pixel position from the new-zoom math while the pane
+// around it is still mid-illusion for the old-to-new transition, so the icon
+// visibly detaches ("floats") until the animation settles. The fix is simply
+// to not touch marker positions while Leaflet's own zoom/pan machinery is
+// running — resuming afterward picks the interpolation back up seamlessly,
+// since it's driven by elapsed real time, not frame count.
+let viewChanging = false;
+map.on('zoomstart movestart', () => { viewChanging = true; });
+map.on('zoomend moveend', () => { viewChanging = false; });
+
 function tickMarkerAnimations() {
-  const now = performance.now();
-  markers.forEach(entry => {
-    if (!entry.animating) return;
-    const t = Math.min(1, (now - entry.animStart) / entry.animDuration);
-    entry.rotation = lerp(entry.animFromRotation, entry.animToRotation, t);
-    entry.marker.setLatLng([lerp(entry.animFromLat, entry.animToLat, t), lerp(entry.animFromLon, entry.animToLon, t)]);
-    entry.iconEl.style.transform = `rotate(${entry.rotation}deg)`;
-    entry.labelEl.style.transform = `rotate(${-entry.rotation}deg)`;
-    if (t >= 1) entry.animating = false;
-  });
+  if (!viewChanging) {
+    const now = performance.now();
+    markers.forEach(entry => {
+      if (!entry.animating) return;
+      const t = Math.min(1, (now - entry.animStart) / entry.animDuration);
+      entry.rotation = lerp(entry.animFromRotation, entry.animToRotation, t);
+      entry.marker.setLatLng([lerp(entry.animFromLat, entry.animToLat, t), lerp(entry.animFromLon, entry.animToLon, t)]);
+      entry.iconEl.style.transform = `rotate(${entry.rotation}deg)`;
+      entry.labelEl.style.transform = `rotate(${-entry.rotation}deg)`;
+      if (t >= 1) entry.animating = false;
+    });
+  }
   requestAnimationFrame(tickMarkerAnimations);
 }
 requestAnimationFrame(tickMarkerAnimations);
