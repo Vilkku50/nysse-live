@@ -136,7 +136,13 @@
   .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
   .leaflet-popup-tip { background: var(--panel); }
   .popup-line1 { font-weight: 800; font-size: 15px; margin-bottom: 2px; }
-  .popup-line2 { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .popup-line2 { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-bottom: 6px; }
+
+  .stop-arrivals { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+  .stop-arrival { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 12px; }
+  .stop-arrival-route { font-weight: 800; color: var(--text); background: var(--panel-2); border-radius: 4px; padding: 1px 6px; }
+  .stop-arrival-time { color: var(--accent-2); font-weight: 700; }
+  .stop-arrival-empty { font-family: var(--mono); font-size: 11px; color: var(--dim); }
 
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
@@ -175,11 +181,15 @@
 
 <script>
 const FEED_URL = "https://data.itsfactory.fi/journeys/api/1/gtfs-rt/vehicle-positions/json";
+const STOPS_URL = "https://data.itsfactory.fi/journeys/api/1/stop-points";
+const VEHICLE_ACTIVITY_URL = "https://data.itsfactory.fi/journeys/api/1/vehicle-activity";
 const POLL_MS = 5000;
+const ARRIVALS_POLL_MS = 15000;
+const STOP_MIN_ZOOM = 15;
 const TAMPERE_CENTER = [61.4978, 23.7610];
 
-const map = L.map('map', { zoomControl: true, attributionControl: true, fadeAnimation: true }).setView(TAMPERE_CENTER, 12);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+const map = L.map('map', { zoomControl: true, attributionControl: true, fadeAnimation: true, preferCanvas: true }).setView(TAMPERE_CENTER, 12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; OpenStreetMap &copy; CARTO · Bussidata: Tampereen joukkoliikenne / ITS Factory',
   maxZoom: 19
 }).addTo(map);
@@ -231,6 +241,114 @@ function popupHtml(entry, vehicleId) {
   const start = entry.trip ? (entry.trip.start_time || '') : '';
   return `<div class="popup-line1">Linja ${entry.routeId}</div>
           <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>`;
+}
+
+// --- Stops + per-stop arrival predictions -----------------------------
+// Stop locations come from the static stop-points list (fetched once).
+// Arrival predictions come from vehicle-activity's onwardCalls, which list
+// every upcoming stop for every active vehicle with an expected time —
+// polled separately (and less often) from the bus-position feed so a
+// hiccup in one never affects the other.
+let allStops = [];
+let stopsLoaded = false;
+let arrivalsByStop = new Map(); // stopId -> [{routeId, time, vehicleId}], soonest first
+const stopMarkers = new Map(); // stopId -> marker
+const stopLayer = L.layerGroup().addTo(map);
+
+async function loadStops() {
+  try {
+    const res = await fetch(STOPS_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    allStops = (data.body || []).map(s => {
+      const [lat, lon] = (s.location || '').split(',').map(Number);
+      return { id: s.shortName, name: s.name || s.shortName, lat, lon };
+    }).filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
+    stopsLoaded = true;
+    renderVisibleStops();
+  } catch (e) {
+    console.error('Pysäkkien haku epäonnistui', e);
+  }
+}
+
+function formatEta(time) {
+  const mins = Math.round((time - Date.now()) / 60000);
+  if (mins <= 0) return 'nyt';
+  if (mins === 1) return '1 min';
+  return mins + ' min';
+}
+
+function stopPopupHtml(stop) {
+  const arrivals = (arrivalsByStop.get(stop.id) || []).slice(0, 8);
+  const rows = arrivals.length
+    ? arrivals.map(a => `<div class="stop-arrival"><span class="stop-arrival-route">${a.routeId}</span><span class="stop-arrival-time">${formatEta(a.time)}</span></div>`).join('')
+    : '<div class="stop-arrival-empty">Ei tiedossa saapumisia</div>';
+  return `<div class="popup-line1">${stop.name}</div>
+          <div class="popup-line2">Pysäkki ${stop.id}</div>
+          <div class="stop-arrivals">${rows}</div>`;
+}
+
+function renderVisibleStops() {
+  if (!stopsLoaded) return;
+  if (map.getZoom() < STOP_MIN_ZOOM) {
+    if (stopMarkers.size) { stopLayer.clearLayers(); stopMarkers.clear(); }
+    return;
+  }
+  const bounds = map.getBounds().pad(0.25);
+  const visibleIds = new Set();
+  allStops.forEach(s => {
+    if (!bounds.contains([s.lat, s.lon])) return;
+    visibleIds.add(s.id);
+    if (!stopMarkers.has(s.id)) {
+      const marker = L.circleMarker([s.lat, s.lon], {
+        radius: 5, weight: 2, color: '#0b0f14', fillColor: '#dfe8f0', fillOpacity: 1
+      });
+      marker.bindPopup(() => stopPopupHtml(s), { maxWidth: 260 });
+      marker.addTo(stopLayer);
+      stopMarkers.set(s.id, marker);
+    }
+  });
+  // drop stop markers that scrolled out of view
+  stopMarkers.forEach((marker, id) => {
+    if (!visibleIds.has(id)) { stopLayer.removeLayer(marker); stopMarkers.delete(id); }
+  });
+}
+map.on('moveend zoomend', renderVisibleStops);
+
+async function pollArrivals() {
+  try {
+    const res = await fetch(VEHICLE_ACTIVITY_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const entries = data.body || [];
+    const next = new Map();
+    const now = Date.now();
+    entries.forEach(v => {
+      const mvj = v.monitoredVehicleJourney;
+      if (!mvj || !Array.isArray(mvj.onwardCalls)) return;
+      const routeId = mvj.lineRef || '?';
+      mvj.onwardCalls.forEach(call => {
+        const stopId = (call.stopPointRef || '').split('/').filter(Boolean).pop();
+        const t = call.expectedArrivalTime || call.aimedArrivalTime;
+        if (!stopId || !t) return;
+        const time = new Date(t);
+        if (isNaN(time) || time.getTime() < now - 60000) return; // skip stale/past calls
+        if (!next.has(stopId)) next.set(stopId, []);
+        next.get(stopId).push({ routeId, time, vehicleId: mvj.vehicleRef });
+      });
+    });
+    next.forEach(list => list.sort((a, b) => a.time - b.time));
+    arrivalsByStop = next;
+    // Keep an already-open stop popup's countdown fresh instead of making
+    // the rider close and reopen it to see updated arrival times.
+    stopMarkers.forEach((marker, id) => {
+      if (!marker.isPopupOpen()) return;
+      const stop = allStops.find(s => s.id === id);
+      if (stop) marker.setPopupContent(stopPopupHtml(stop));
+    });
+  } catch (e) {
+    console.error('Saapumisennusteiden haku epäonnistui', e);
+  }
 }
 
 function passesFilter(routeId) {
@@ -479,6 +597,10 @@ document.getElementById('btn-fit').addEventListener('click', () => {
 syncFilterUI();
 poll();
 setInterval(poll, POLL_MS);
+
+loadStops();
+pollArrivals();
+setInterval(pollArrivals, ARRIVALS_POLL_MS);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
