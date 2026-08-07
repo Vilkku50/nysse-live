@@ -2,10 +2,11 @@
 <html lang="fi">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Nysse — bussit kartalla</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0b0f14">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -20,17 +21,19 @@
     --accent: #ffb400;
     --accent-2: #35c2c1;
     --danger: #ff5d5d;
+    --user-blue: #3b82f6;
     --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
+    overscroll-behavior: none; overflow: hidden;
+  }
   #map { position: absolute; inset: 0; background: #0b0f14; }
 
-  .leaflet-tile-pane { filter: saturate(0.55) brightness(0.62) contrast(1.05) hue-rotate(180deg) invert(1); }
-
   #hud {
-    position: absolute; top: 12px; left: 12px; right: 12px;
+    position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px;
     z-index: 1000; display: flex; gap: 8px; align-items: flex-start;
     pointer-events: none;
   }
@@ -41,41 +44,70 @@
     border-radius: 10px;
     backdrop-filter: blur(6px);
   }
-  #title-card { padding: 10px 14px; flex: 0 0 auto; }
+  #title-card { padding: 10px 14px; flex: 0 0 auto; user-select: none; }
   #title-card h1 { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin: 0; color: var(--text); }
   #title-card .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 3px; display:flex; gap:8px; align-items:center; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); display:inline-block; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); display:inline-block; transition: background-color 0.3s ease; }
   .dot.stale { background: var(--danger); }
   .dot.pulse { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:0.35; } }
 
   #filter-card { padding: 8px 10px; flex: 1 1 auto; max-width: 420px; display:flex; flex-direction:column; gap:6px; }
+  #filter-row { position: relative; display: flex; }
   #filter-input {
     background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-    font-family: var(--mono); font-size: 13px; padding: 7px 9px; border-radius: 7px; outline: none; width: 100%;
+    font-family: var(--mono); font-size: 13px; padding: 9px 32px 9px 10px; border-radius: 7px; outline: none; width: 100%;
+    transition: border-color 0.15s ease;
   }
   #filter-input::placeholder { color: var(--dim); }
   #filter-input:focus { border-color: var(--accent-2); }
-  #route-chips { display:flex; flex-wrap:wrap; gap:5px; max-height: 74px; overflow-y:auto; }
-  .chip {
-    font-family: var(--mono); font-size: 11px; padding: 3px 7px; border-radius: 5px;
-    background: var(--panel-2); border: 1px solid var(--line); color: var(--dim); cursor: pointer; user-select:none;
-    white-space: nowrap;
+  #filter-clear {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    width: 26px; height: 26px; border-radius: 50%; border: none; background: transparent;
+    color: var(--dim); font-size: 16px; line-height: 1; cursor: pointer; display: none;
+    align-items: center; justify-content: center;
   }
+  #filter-clear:active { background: var(--panel-2); color: var(--text); }
+  #route-chips { display:flex; flex-wrap:wrap; gap:6px; max-height: 88px; overflow-y:auto; }
+  .chip {
+    font-family: var(--mono); font-size: 12px; padding: 6px 10px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--dim); cursor: pointer; user-select:none;
+    white-space: nowrap; transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  }
+  .chip:active { transform: scale(0.93); }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #1a1300; font-weight: 700; }
 
+  #map-controls {
+    position: absolute; right: 12px; bottom: max(46px, calc(env(safe-area-inset-bottom) + 46px));
+    z-index: 1000; display: flex; flex-direction: column; gap: 8px;
+  }
+  .icon-btn {
+    width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line);
+    background: rgba(18,24,32,0.92); color: var(--text); font-size: 18px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    backdrop-filter: blur(6px); transition: transform 0.1s ease, background-color 0.15s ease;
+  }
+  .icon-btn:active { transform: scale(0.92); background: var(--panel-2); }
+  .icon-btn.active { color: var(--user-blue); border-color: var(--user-blue); }
+
   #stats {
-    position: absolute; bottom: 12px; left: 12px; z-index: 1000;
+    position: absolute; bottom: max(12px, env(safe-area-inset-bottom)); left: 12px; z-index: 1000;
     padding: 8px 12px; font-family: var(--mono); font-size: 11px; color: var(--dim);
-    display:flex; gap: 14px;
+    display:flex; gap: 14px; user-select: none;
   }
   #stats b { color: var(--text); }
 
   #err {
-    position:absolute; bottom: 12px; right: 12px; z-index: 1000;
+    position:absolute; bottom: max(12px, env(safe-area-inset-bottom)); right: 12px; z-index: 1000;
     padding: 8px 12px; font-family: var(--mono); font-size: 11px; color: var(--danger);
     display:none; max-width: 320px;
   }
+
+  /* Smooth motion: Leaflet updates this element's transform on every setLatLng, so a
+     CSS transition on it turns discrete 5s position updates into a continuous glide.
+     Interaction (pan/zoom) toggles .no-anim so gestures stay instant. */
+  .leaflet-marker-icon { transition: transform 4.5s linear, opacity 0.35s ease; }
+  .leaflet-marker-icon.no-anim { transition: none !important; }
 
   .bus-icon {
     width: 22px; height: 22px; border-radius: 50%;
@@ -84,15 +116,20 @@
     font-family: var(--mono); font-weight:800; font-size: 9px; color: #06282b;
     box-shadow: 0 0 0 2px rgba(53,194,193,0.25);
     transform-origin: center center;
+    transition: transform 1.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
   }
+  .no-anim .bus-icon, .no-anim .bus-icon .label { transition: none !important; }
   .bus-icon.picked { background: var(--accent); box-shadow: 0 0 0 3px rgba(255,180,0,0.35); }
   .bus-icon .arrow {
     position:absolute; width: 0; height: 0;
     border-left: 4px solid transparent; border-right: 4px solid transparent;
     border-bottom: 7px solid var(--accent-2);
-    top: -8px;
+    top: -8px; transition: border-bottom-color 0.2s ease;
   }
   .bus-icon.picked .arrow { border-bottom-color: var(--accent); }
+  .bus-icon .label { display: inline-block; transition: transform 1.2s ease; }
+
+  .user-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--user-blue); border: 2px solid #fff; box-shadow: 0 0 0 2px rgba(59,130,246,0.35); }
 
   .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
   .leaflet-popup-tip { background: var(--panel); }
@@ -113,9 +150,17 @@
     <div class="sub"><span id="status-dot" class="dot pulse"></span><span id="status-text">yhdistetään…</span></div>
   </div>
   <div id="filter-card" class="panel">
-    <input id="filter-input" type="text" placeholder="Suodata linja (esim. 3, 8B, 21) — tyhjä = kaikki" />
+    <div id="filter-row">
+      <input id="filter-input" type="text" inputmode="search" placeholder="Suodata linja (esim. 3, 8B, 21) — tyhjä = kaikki" />
+      <button id="filter-clear" aria-label="Tyhjennä suodatin">×</button>
+    </div>
     <div id="route-chips"></div>
   </div>
+</div>
+
+<div id="map-controls">
+  <button id="btn-locate" class="icon-btn" title="Oma sijainti" aria-label="Oma sijainti">◎</button>
+  <button id="btn-fit" class="icon-btn" title="Näytä kaikki bussit" aria-label="Näytä kaikki bussit">⛶</button>
 </div>
 
 <div id="stats">
@@ -131,31 +176,48 @@ const FEED_URL = "https://data.itsfactory.fi/journeys/api/1/gtfs-rt/vehicle-posi
 const POLL_MS = 5000;
 const TAMPERE_CENTER = [61.4978, 23.7610];
 
-const map = L.map('map', { zoomControl: true, attributionControl: true }).setView(TAMPERE_CENTER, 12);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+const map = L.map('map', { zoomControl: true, attributionControl: true, fadeAnimation: true }).setView(TAMPERE_CENTER, 12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; OpenStreetMap &copy; CARTO · Bussidata: Tampereen joukkoliikenne / ITS Factory',
   maxZoom: 19
 }).addTo(map);
 
-const markers = new Map(); // vehicle id -> {marker, lastSeen}
+// Pause marker transitions during user gestures so panning/zooming stays instant,
+// then let the next poll's positions glide in smoothly again.
+let animSuspended = false;
+function setAnimSuspended(suspended) {
+  animSuspended = suspended;
+  markers.forEach(({ marker }) => {
+    const el = marker.getElement();
+    if (el) el.classList.toggle('no-anim', suspended);
+  });
+}
+map.on('zoomstart movestart', () => setAnimSuspended(true));
+map.on('zoomend moveend', () => setAnimSuspended(false));
+
+const markers = new Map(); // vehicle id -> {marker, routeId, lastSeen, iconEl, labelEl, rotation, trip}
 let selectedRoutes = new Set();
 let filterText = "";
 let lastFetchOk = null;
+let lastAllRoutes = new Set();
+let lastRouteSignature = "";
 
-function routeColorSeed(routeId) {
-  // deterministic hue from route id string, used only for chip emphasis if needed later
-  let h = 0;
-  for (let i = 0; i < routeId.length; i++) h = (h * 31 + routeId.charCodeAt(i)) % 360;
-  return h;
+function shortestRotation(fromDeg, toDeg) {
+  const delta = ((toDeg - fromDeg + 540) % 360) - 180;
+  return fromDeg + delta;
 }
 
-function makeIcon(routeId, bearing, picked) {
-  const html = `
-    <div class="bus-icon ${picked ? 'picked' : ''}" style="transform: rotate(${bearing || 0}deg);">
+function buildIconHtml(routeId, picked) {
+  return `<div class="bus-icon ${picked ? 'picked' : ''}">
       <div class="arrow"></div>
-      <span style="transform: rotate(${-(bearing || 0)}deg);">${routeId}</span>
+      <span class="label">${routeId}</span>
     </div>`;
-  return L.divIcon({ html, className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-14] });
+}
+
+function popupHtml(entry, vehicleId) {
+  const start = entry.trip ? (entry.trip.start_time || '') : '';
+  return `<div class="popup-line1">Linja ${entry.routeId}</div>
+          <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>`;
 }
 
 function passesFilter(routeId) {
@@ -182,6 +244,18 @@ function setStatus(ok, msg) {
   }
 }
 
+function toast(msg) {
+  const err = document.getElementById('err');
+  err.textContent = msg;
+  err.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { if (lastFetchOk !== false) err.style.display = 'none'; }, 3000);
+}
+
+function syncFilterUI() {
+  document.getElementById('filter-clear').style.display = (filterText || selectedRoutes.size > 0) ? 'flex' : 'none';
+}
+
 function rebuildChips(allRoutes) {
   const container = document.getElementById('route-chips');
   const sorted = Array.from(allRoutes).sort((a,b) => {
@@ -195,10 +269,14 @@ function rebuildChips(allRoutes) {
     chip.className = 'chip' + (selectedRoutes.has(r) ? ' on' : '');
     chip.textContent = r;
     chip.onclick = () => {
+      filterText = '';
+      document.getElementById('filter-input').value = '';
       if (selectedRoutes.has(r)) selectedRoutes.delete(r);
       else selectedRoutes.add(r);
       applyFilterToMarkers();
+      applyPickedHighlight();
       rebuildChips(allRoutes);
+      syncFilterUI();
     };
     container.appendChild(chip);
   });
@@ -210,6 +288,61 @@ function applyFilterToMarkers() {
     const el = marker.getElement();
     if (el) el.style.display = show ? '' : 'none';
   });
+}
+
+function applyPickedHighlight() {
+  markers.forEach(entry => {
+    entry.iconEl.classList.toggle('picked', selectedRoutes.has(entry.routeId));
+  });
+}
+
+function createMarker(id, routeId, lat, lon, bearing, trip) {
+  const picked = selectedRoutes.has(routeId);
+  const icon = L.divIcon({ html: buildIconHtml(routeId, picked), className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-14] });
+  const marker = L.marker([lat, lon], { icon }).addTo(map);
+  const entry = { marker, routeId, lastSeen: Date.now(), rotation: bearing, trip };
+  marker.bindPopup(() => popupHtml(entry, id));
+
+  const el = marker.getElement();
+  entry.iconEl = el.querySelector('.bus-icon');
+  entry.labelEl = el.querySelector('.label');
+  entry.iconEl.style.transform = `rotate(${bearing}deg)`;
+  entry.labelEl.style.transform = `rotate(${-bearing}deg)`;
+  el.style.display = passesFilter(routeId) ? '' : 'none';
+
+  // Fade the marker in instead of popping in at full opacity; skip the entry
+  // animation for the very first placement so it doesn't glide in from (0,0).
+  el.classList.add('no-anim');
+  el.style.opacity = '0';
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    el.classList.toggle('no-anim', animSuspended);
+    el.style.opacity = '1';
+  }));
+
+  markers.set(id, entry);
+}
+
+function updateMarker(entry, id, routeId, lat, lon, bearing, trip) {
+  entry.marker.setLatLng([lat, lon]);
+  const newRotation = shortestRotation(entry.rotation, bearing);
+  entry.rotation = newRotation;
+  entry.iconEl.style.transform = `rotate(${newRotation}deg)`;
+  entry.labelEl.style.transform = `rotate(${-newRotation}deg)`;
+  entry.trip = trip;
+  entry.lastSeen = Date.now();
+  if (entry.routeId !== routeId) {
+    entry.routeId = routeId;
+    entry.labelEl.textContent = routeId;
+  }
+  entry.iconEl.classList.toggle('picked', selectedRoutes.has(routeId));
+  const el = entry.marker.getElement();
+  if (el) el.style.display = passesFilter(routeId) ? '' : 'none';
+}
+
+function removeMarker(entry) {
+  const el = entry.marker.getElement();
+  if (el) el.style.opacity = '0';
+  setTimeout(() => map.removeLayer(entry.marker), 400);
 }
 
 async function poll() {
@@ -234,30 +367,18 @@ async function poll() {
       seenIds.add(id);
       allRoutes.add(routeId);
 
-      const picked = selectedRoutes.has(routeId);
       const existing = markers.get(id);
-
       if (existing) {
-        existing.marker.setLatLng([lat, lon]);
-        existing.marker.setIcon(makeIcon(routeId, bearing, picked));
-        existing.routeId = routeId;
-        existing.lastSeen = Date.now();
-        const el = existing.marker.getElement();
-        if (el) el.style.display = passesFilter(routeId) ? '' : 'none';
-        existing.marker.setPopupContent(popupHtml(routeId, id, v.trip));
+        updateMarker(existing, id, routeId, lat, lon, bearing, v.trip);
       } else {
-        const marker = L.marker([lat, lon], { icon: makeIcon(routeId, bearing, picked) }).addTo(map);
-        marker.bindPopup(popupHtml(routeId, id, v.trip));
-        markers.set(id, { marker, routeId, lastSeen: Date.now() });
-        const el = marker.getElement();
-        if (el) el.style.display = passesFilter(routeId) ? '' : 'none';
+        createMarker(id, routeId, lat, lon, bearing, v.trip);
       }
     });
 
     // remove vehicles no longer present
-    markers.forEach((val, id) => {
+    markers.forEach((entry, id) => {
       if (!seenIds.has(id)) {
-        map.removeLayer(val.marker);
+        removeMarker(entry);
         markers.delete(id);
       }
     });
@@ -266,7 +387,14 @@ async function poll() {
     document.getElementById('stat-routes').textContent = allRoutes.size;
     document.getElementById('stat-time').textContent = new Date().toLocaleTimeString('fi-FI');
 
-    rebuildChips(allRoutes);
+    // Only touch the chip row's DOM when the set of routes actually changed —
+    // rebuilding it every 5s otherwise causes needless flicker/scroll resets.
+    lastAllRoutes = allRoutes;
+    const sig = Array.from(allRoutes).sort().join(',');
+    if (sig !== lastRouteSignature) {
+      lastRouteSignature = sig;
+      rebuildChips(allRoutes);
+    }
     setStatus(true, 'live · päivitys ' + (POLL_MS/1000) + ' s');
     lastFetchOk = true;
   } catch (e) {
@@ -275,16 +403,58 @@ async function poll() {
   }
 }
 
-function popupHtml(routeId, vehicleId, trip) {
-  const start = trip ? (trip.start_time || '') : '';
-  return `<div class="popup-line1">Linja ${routeId}</div>
-          <div class="popup-line2">Ajoneuvo ${vehicleId}${start ? ' · lähtö ' + start : ''}</div>`;
-}
-
 document.getElementById('filter-input').addEventListener('input', (e) => {
   filterText = e.target.value.trim();
-  if (filterText) { selectedRoutes.clear(); rebuildChips(new Set(Array.from(markers.values()).map(m => m.routeId))); }
+  if (filterText) { selectedRoutes.clear(); rebuildChips(lastAllRoutes); applyPickedHighlight(); }
   applyFilterToMarkers();
+  syncFilterUI();
+});
+
+document.getElementById('filter-clear').addEventListener('click', () => {
+  filterText = '';
+  selectedRoutes.clear();
+  document.getElementById('filter-input').value = '';
+  applyFilterToMarkers();
+  applyPickedHighlight();
+  rebuildChips(lastAllRoutes);
+  syncFilterUI();
+});
+
+let userMarker = null, userAccuracyCircle = null, watchId = null;
+function updateUserLocation(lat, lon, accuracy) {
+  if (!userMarker) {
+    userMarker = L.marker([lat, lon], { icon: L.divIcon({ html: '<div class="user-dot"></div>', className: '', iconSize: [14,14], iconAnchor: [7,7] }), zIndexOffset: 1000 }).addTo(map);
+    userAccuracyCircle = L.circle([lat, lon], { radius: accuracy, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.12 }).addTo(map);
+  } else {
+    userMarker.setLatLng([lat, lon]);
+    userAccuracyCircle.setLatLng([lat, lon]).setRadius(accuracy);
+  }
+}
+
+document.getElementById('btn-locate').addEventListener('click', (e) => {
+  if (!navigator.geolocation) { toast('Selain ei tue paikannusta.'); return; }
+  const btn = e.currentTarget;
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const { latitude, longitude, accuracy } = pos.coords;
+    updateUserLocation(latitude, longitude, accuracy);
+    map.setView([latitude, longitude], 15);
+    btn.classList.add('active');
+    if (!watchId) {
+      watchId = navigator.geolocation.watchPosition((p) => {
+        updateUserLocation(p.coords.latitude, p.coords.longitude, p.coords.accuracy);
+      }, () => {}, { enableHighAccuracy: true, maximumAge: 10000 });
+    }
+  }, (err) => {
+    toast('Sijaintia ei saatu (' + err.message + ')');
+  }, { enableHighAccuracy: true, timeout: 8000 });
+});
+
+document.getElementById('btn-fit').addEventListener('click', () => {
+  const latlngs = Array.from(markers.values())
+    .filter(m => passesFilter(m.routeId))
+    .map(m => m.marker.getLatLng());
+  if (latlngs.length === 0) { toast('Ei näkyviä bussisijainteja.'); return; }
+  map.fitBounds(L.latLngBounds(latlngs), { padding: [50, 50], maxZoom: 16 });
 });
 
 poll();
