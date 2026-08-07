@@ -157,7 +157,7 @@
   .stop-arrivals { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
   .stop-arrival { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 12px; }
   .stop-arrival-route { font-weight: 800; color: var(--text); background: var(--panel-2); border-radius: 4px; padding: 1px 6px; }
-  .stop-arrival-time { color: var(--accent-2); font-weight: 700; }
+  .stop-arrival-time { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; }
   .stop-arrival-empty { font-family: var(--mono); font-size: 11px; color: var(--dim); }
 
   .popup-btn {
@@ -194,7 +194,9 @@
   }
   .route-stop-row:last-child { border-bottom: none; }
   .route-stop-name { color: var(--text); }
-  .route-stop-eta { color: var(--accent-2); font-weight: 700; white-space: nowrap; }
+  .route-stop-eta { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; white-space: nowrap; }
+  .eta-mins { color: var(--accent-2); font-weight: 700; }
+  .eta-clock { color: var(--dim); font-weight: 500; font-size: 0.85em; }
 
   .alert-row { padding: 8px 0; border-bottom: 1px dashed var(--line); }
   .alert-row:last-child { border-bottom: none; }
@@ -459,9 +461,9 @@ async function loadStops() {
 
 function formatEta(time) {
   const mins = Math.round((time - Date.now()) / 60000);
-  if (mins <= 0) return 'nyt';
-  if (mins === 1) return '1 min';
-  return mins + ' min';
+  const rel = mins <= 0 ? 'nyt' : (mins === 1 ? '1 min' : mins + ' min');
+  const clock = time.toLocaleTimeString('fi-FI', { hour: '2-digit', minute: '2-digit' });
+  return `<span class="eta-mins">${rel}</span><span class="eta-clock">${clock}</span>`;
 }
 
 function stopPopupHtml(stop) {
