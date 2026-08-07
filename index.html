@@ -39,10 +39,12 @@
   }
   .panel {
     pointer-events: auto;
-    background: rgba(18,24,32,0.92);
+    /* Solid background, no backdrop-filter: blurring the map live underneath
+       these panels forces a full-screen re-blur on every pan/zoom frame,
+       which is a major jank source on Android Chrome. */
+    background: rgba(15,20,27,0.97);
     border: 1px solid var(--line);
     border-radius: 10px;
-    backdrop-filter: blur(6px);
   }
   #title-card { padding: 10px 14px; flex: 0 0 auto; user-select: none; }
   #title-card h1 { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin: 0; color: var(--text); }
@@ -83,9 +85,9 @@
   }
   .icon-btn {
     width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line);
-    background: rgba(18,24,32,0.92); color: var(--text); font-size: 18px;
+    background: rgba(15,20,27,0.97); color: var(--text); font-size: 18px;
     display: flex; align-items: center; justify-content: center; cursor: pointer;
-    backdrop-filter: blur(6px); transition: transform 0.1s ease, background-color 0.15s ease;
+    transition: transform 0.1s ease, background-color 0.15s ease;
   }
   .icon-btn:active { transform: scale(0.92); background: var(--panel-2); }
   .icon-btn.active { color: var(--user-blue); border-color: var(--user-blue); }
@@ -106,7 +108,7 @@
   /* Smooth motion: Leaflet updates this element's transform on every setLatLng, so a
      CSS transition on it turns discrete 5s position updates into a continuous glide.
      Interaction (pan/zoom) toggles .no-anim so gestures stay instant. */
-  .leaflet-marker-icon { transition: transform 4.5s linear, opacity 0.35s ease; }
+  .leaflet-marker-icon { transition: transform 4.5s linear, opacity 0.35s ease; will-change: transform; }
   .leaflet-marker-icon.no-anim { transition: none !important; }
 
   .bus-icon {
@@ -196,7 +198,18 @@ map.on('zoomstart movestart', () => setAnimSuspended(true));
 map.on('zoomend moveend', () => setAnimSuspended(false));
 
 const markers = new Map(); // vehicle id -> {marker, routeId, lastSeen, iconEl, labelEl, rotation, trip}
-let selectedRoutes = new Set();
+const SELECTED_ROUTES_KEY = 'nysse-live:selected-routes';
+function loadSelectedRoutes() {
+  try {
+    const raw = localStorage.getItem(SELECTED_ROUTES_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch (e) { return new Set(); }
+}
+function saveSelectedRoutes() {
+  try { localStorage.setItem(SELECTED_ROUTES_KEY, JSON.stringify(Array.from(selectedRoutes))); } catch (e) {}
+}
+
+let selectedRoutes = loadSelectedRoutes();
 let filterText = "";
 let lastFetchOk = null;
 let lastAllRoutes = new Set();
@@ -221,8 +234,10 @@ function popupHtml(entry, vehicleId) {
 }
 
 function passesFilter(routeId) {
-  if (selectedRoutes.size > 0) return selectedRoutes.has(routeId);
+  // Text search temporarily overrides the saved route picks (rather than
+  // clearing them) so typing in the box never erases what's persisted.
   if (filterText) return routeId.toLowerCase().includes(filterText.toLowerCase());
+  if (selectedRoutes.size > 0) return selectedRoutes.has(routeId);
   return true;
 }
 
@@ -273,6 +288,7 @@ function rebuildChips(allRoutes) {
       document.getElementById('filter-input').value = '';
       if (selectedRoutes.has(r)) selectedRoutes.delete(r);
       else selectedRoutes.add(r);
+      saveSelectedRoutes();
       applyFilterToMarkers();
       applyPickedHighlight();
       rebuildChips(allRoutes);
@@ -404,8 +420,10 @@ async function poll() {
 }
 
 document.getElementById('filter-input').addEventListener('input', (e) => {
+  // Typing only shadows the saved route picks for display purposes — it
+  // does not touch (or persist over) selectedRoutes, so clearing the text
+  // box always brings the saved picks straight back.
   filterText = e.target.value.trim();
-  if (filterText) { selectedRoutes.clear(); rebuildChips(lastAllRoutes); applyPickedHighlight(); }
   applyFilterToMarkers();
   syncFilterUI();
 });
@@ -413,6 +431,7 @@ document.getElementById('filter-input').addEventListener('input', (e) => {
 document.getElementById('filter-clear').addEventListener('click', () => {
   filterText = '';
   selectedRoutes.clear();
+  saveSelectedRoutes();
   document.getElementById('filter-input').value = '';
   applyFilterToMarkers();
   applyPickedHighlight();
@@ -457,6 +476,7 @@ document.getElementById('btn-fit').addEventListener('click', () => {
   map.fitBounds(L.latLngBounds(latlngs), { padding: [50, 50], maxZoom: 16 });
 });
 
+syncFilterUI();
 poll();
 setInterval(poll, POLL_MS);
 
