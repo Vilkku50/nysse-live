@@ -30,7 +30,10 @@
     height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
     overscroll-behavior: none; overflow: hidden;
   }
-  #map { position: absolute; inset: 0; background: #0b0f14; }
+  /* Matches CARTO Voyager's own background color (its landmass_fill), so a
+     tile that hasn't loaded yet — e.g. right after zooming out to an area
+     never fetched before — blends in instead of flashing as a black square. */
+  #map { position: absolute; inset: 0; background: #fbf8f3; }
 
   #hud {
     position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px;
@@ -120,6 +123,12 @@
     box-shadow: 0 0 0 2px rgba(53,194,193,0.25);
     transform-origin: center center;
     transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    /* Rotated every animation frame from JS (tickMarkerAnimations) — hint the
+       compositor to keep this on its own GPU layer so rotation stays smooth
+       up to whatever refresh rate the display actually runs at (60/90/120Hz
+       etc.); requestAnimationFrame already paces to the real refresh rate on
+       its own, this just avoids main-thread repaint work becoming the cap. */
+    will-change: transform;
   }
   .bus-icon.picked { background: var(--accent); box-shadow: 0 0 0 3px rgba(255,180,0,0.35); }
   .bus-icon .arrow {
@@ -129,7 +138,7 @@
     top: -8px; transition: border-bottom-color 0.2s ease;
   }
   .bus-icon.picked .arrow { border-bottom-color: var(--accent); }
-  .bus-icon .label { display: inline-block; }
+  .bus-icon .label { display: inline-block; will-change: transform; }
 
   .user-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--user-blue); border: 2px solid #fff; box-shadow: 0 0 0 2px rgba(59,130,246,0.35); }
 
