@@ -203,6 +203,32 @@
   .alert-title { font-family: var(--mono); font-weight: 800; font-size: 12px; color: var(--text); margin-bottom: 2px; }
   .alert-desc { font-family: var(--mono); font-size: 11px; color: var(--dim); line-height: 1.4; }
 
+  #planner-form { padding: 10px 14px 4px; display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+  .planner-field { position: relative; }
+  #planner-origin, #planner-dest, #planner-time {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    font-family: var(--mono); font-size: 13px; padding: 9px 10px; border-radius: 7px; outline: none;
+  }
+  #planner-origin::placeholder, #planner-dest::placeholder { color: var(--dim); }
+  #planner-origin:focus, #planner-dest:focus, #planner-time:focus { border-color: var(--accent-2); }
+  .planner-suggestions {
+    display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 10;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    max-height: 180px; overflow-y: auto;
+  }
+  .planner-suggestion {
+    padding: 9px 10px; font-family: var(--mono); font-size: 12px; color: var(--text); cursor: pointer;
+    border-bottom: 1px solid var(--line);
+  }
+  .planner-suggestion:last-child { border-bottom: none; }
+  .planner-suggestion:active { background: var(--panel-2); }
+
+  .planner-option { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+  .planner-option:last-child { border-bottom: none; }
+  .planner-option-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 12px; margin-bottom: 2px; }
+  .planner-option-times { color: var(--accent-2); font-weight: 700; }
+  .planner-option-sub { font-family: var(--mono); font-size: 10px; color: var(--dim); }
+
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 </style>
@@ -229,6 +255,7 @@
 </div>
 
 <div id="map-controls">
+  <button id="btn-planner" class="icon-btn" title="Reittihaku" aria-label="Reittihaku">🧭</button>
   <button id="btn-locate" class="icon-btn" title="Oma sijainti" aria-label="Oma sijainti">◎</button>
   <button id="btn-fit" class="icon-btn" title="Näytä kaikki bussit" aria-label="Näytä kaikki bussit">⛶</button>
 </div>
@@ -255,6 +282,28 @@
     <button id="alerts-panel-close" class="sheet-close" aria-label="Sulje">×</button>
   </div>
   <div id="alerts-panel-list" class="sheet-list"></div>
+</div>
+
+<div id="planner-panel" class="panel sheet-panel">
+  <div class="sheet-header">
+    <div class="sheet-title">Reittihaku</div>
+    <button id="planner-close" class="sheet-close" aria-label="Sulje">×</button>
+  </div>
+  <div id="planner-form">
+    <div class="planner-field">
+      <input id="planner-origin" type="text" inputmode="search" placeholder="Lähtöpysäkki" autocomplete="off" />
+      <div id="planner-origin-suggestions" class="planner-suggestions"></div>
+    </div>
+    <div class="planner-field">
+      <input id="planner-dest" type="text" inputmode="search" placeholder="Määränpää" autocomplete="off" />
+      <div id="planner-dest-suggestions" class="planner-suggestions"></div>
+    </div>
+    <div class="planner-field">
+      <input id="planner-time" type="datetime-local" />
+    </div>
+    <button id="planner-search" class="popup-btn" type="button">Hae yhteyksiä</button>
+  </div>
+  <div id="planner-results" class="sheet-list"></div>
 </div>
 
 <script>
@@ -561,6 +610,7 @@ function removeVehicleRouteLine() {
 
 function showVehicleRoute(vehicleId, routeId) {
   closeAlertsPanel();
+  closePlannerPanel();
   openVehiclePanelId = vehicleId;
   document.getElementById('route-panel-title').textContent = 'Linja ' + routeId + ' · tulevat pysäkit';
   document.getElementById('route-panel-list').innerHTML = vehiclePanelHtml(vehicleId);
@@ -633,6 +683,7 @@ function alertsPanelHtml() {
 
 function showAlertsPanel() {
   closeVehicleRoute();
+  closePlannerPanel();
   document.getElementById('alerts-panel-list').innerHTML = alertsPanelHtml();
   document.getElementById('alerts-panel').style.display = 'flex';
 }
@@ -643,6 +694,242 @@ function closeAlertsPanel() {
 
 document.getElementById('alerts-banner').addEventListener('click', showAlertsPanel);
 document.getElementById('alerts-panel-close').addEventListener('click', closeAlertsPanel);
+
+// --- Journey planner -----------------------------------------------------
+// journey-patterns gives, per line/direction serving a stop, the full
+// ordered stop sequence plus every scheduled journey (trip) on it —
+// departure/arrival for the whole pattern (not per intermediate stop),
+// which day types it runs on, and calendar exceptions. There's no separate
+// per-stop schedule endpoint used here, so times at a stop partway through
+// a pattern are estimated by interpolating between the pattern's own
+// departure and arrival proportionally to the stop's position — clearly
+// labelled as estimated in the results rather than presented as exact.
+const JOURNEY_PATTERNS_URL = "https://data.itsfactory.fi/journeys/api/1/journey-patterns";
+const WEEKDAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const TRANSFER_MIN_BUFFER_MS = 60000; // at least 1 minute to physically change buses
+const TRANSFER_MAX_WAIT_MS = 45 * 60000; // don't suggest sitting around for 45+ minutes
+
+function trailingId(url) { return (url || '').split('/').filter(Boolean).pop() || ''; }
+
+function toYMD(date) {
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+function parseTimeOfDay(hms, baseDate) {
+  const parts = String(hms || '').split(':').map(Number);
+  const d = new Date(baseDate);
+  d.setHours(0, 0, 0, 0);
+  // GTFS times can exceed 24:00:00 for past-midnight trips (e.g. "25:10:00");
+  // setSeconds naturally rolls that over into the next day.
+  d.setSeconds((parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0));
+  return d;
+}
+
+function journeyRunsOnDate(journey, date) {
+  const ymd = toYMD(date);
+  const exception = (journey.dayTypeExceptions || []).find(ex => ymd >= ex.from && ymd <= ex.to);
+  if (exception) return exception.runs === 'yes';
+  return (journey.dayTypes || []).includes(WEEKDAY_NAMES[date.getDay()]);
+}
+
+function estimateTimeAtStopIndex(journey, totalStops, stopIndex, baseDate) {
+  const dep = parseTimeOfDay(journey.departureTime, baseDate);
+  const arr = parseTimeOfDay(journey.arrivalTime, baseDate);
+  const frac = totalStops > 1 ? stopIndex / (totalStops - 1) : 0;
+  return new Date(dep.getTime() + (arr.getTime() - dep.getTime()) * frac);
+}
+
+const journeyPatternsCache = new Map(); // stopId -> Promise<pattern[]>
+function fetchJourneyPatternsForStop(stopId) {
+  if (journeyPatternsCache.has(stopId)) return journeyPatternsCache.get(stopId);
+  const p = fetch(JOURNEY_PATTERNS_URL + '?stopPointId=' + encodeURIComponent(stopId), { cache: 'no-store' })
+    .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+    .then(data => (data.body || []).map(pattern => ({
+      lineId: trailingId(pattern.lineUrl),
+      stopPoints: (pattern.stopPoints || []).map(s => s.shortName),
+      journeys: pattern.journeys || [],
+    })))
+    .catch(e => { journeyPatternsCache.delete(stopId); throw e; });
+  journeyPatternsCache.set(stopId, p);
+  return p;
+}
+
+async function findDirectOptions(originId, destId, targetDate) {
+  const patterns = await fetchJourneyPatternsForStop(originId);
+  const options = [];
+  patterns.forEach(pattern => {
+    const oi = pattern.stopPoints.indexOf(originId);
+    const di = pattern.stopPoints.indexOf(destId);
+    if (oi === -1 || di === -1 || di <= oi) return;
+    const total = pattern.stopPoints.length;
+    pattern.journeys.forEach(j => {
+      if (!journeyRunsOnDate(j, targetDate)) return;
+      const dep = estimateTimeAtStopIndex(j, total, oi, targetDate);
+      if (dep < targetDate) return;
+      const arr = estimateTimeAtStopIndex(j, total, di, targetDate);
+      options.push({ type: 'direct', dep, lineId: pattern.lineId, headSign: j.headSign, arr });
+    });
+  });
+  options.sort((a, b) => a.dep - b.dep);
+  return options;
+}
+
+async function findTransferOptions(originId, destId, targetDate) {
+  const originPatterns = await fetchJourneyPatternsForStop(originId);
+  // Candidate transfer stops: stops downstream of the origin on any pattern
+  // serving it, excluding the destination itself (that's the direct case)
+  // and anything past a stop where that same pattern already reaches it.
+  const candidates = new Map(); // transferStopId -> {pattern, oi, idx}
+  originPatterns.forEach(pattern => {
+    const oi = pattern.stopPoints.indexOf(originId);
+    if (oi === -1) return;
+    const di = pattern.stopPoints.indexOf(destId);
+    pattern.stopPoints.forEach((stopId, idx) => {
+      if (idx <= oi || stopId === destId) return;
+      if (di !== -1 && idx >= di) return;
+      if (!candidates.has(stopId)) candidates.set(stopId, { pattern, oi, idx });
+    });
+  });
+  const candidateIds = Array.from(candidates.keys()).slice(0, 10); // bound the network cost of a search
+
+  const results = [];
+  await Promise.all(candidateIds.map(async (transferId) => {
+    const info = candidates.get(transferId);
+    let transferPatterns;
+    try { transferPatterns = await fetchJourneyPatternsForStop(transferId); } catch (e) { return; }
+    transferPatterns.forEach(pattern2 => {
+      if (pattern2.lineId === info.pattern.lineId) return; // not a real transfer if it's the same line
+      const ti = pattern2.stopPoints.indexOf(transferId);
+      const di2 = pattern2.stopPoints.indexOf(destId);
+      if (ti === -1 || di2 === -1 || di2 <= ti) return;
+      const total1 = info.pattern.stopPoints.length;
+      const total2 = pattern2.stopPoints.length;
+      info.pattern.journeys.forEach(j1 => {
+        if (!journeyRunsOnDate(j1, targetDate)) return;
+        const dep1 = estimateTimeAtStopIndex(j1, total1, info.oi, targetDate);
+        if (dep1 < targetDate) return;
+        const arr1 = estimateTimeAtStopIndex(j1, total1, info.idx, targetDate);
+        pattern2.journeys.forEach(j2 => {
+          if (!journeyRunsOnDate(j2, targetDate)) return;
+          const dep2 = estimateTimeAtStopIndex(j2, total2, ti, targetDate);
+          const wait = dep2 - arr1;
+          if (wait < TRANSFER_MIN_BUFFER_MS || wait > TRANSFER_MAX_WAIT_MS) return;
+          const arr2 = estimateTimeAtStopIndex(j2, total2, di2, targetDate);
+          results.push({
+            type: 'transfer', dep: dep1, transferStopId: transferId,
+            leg1: { lineId: info.pattern.lineId, dep: dep1, arr: arr1 },
+            leg2: { lineId: pattern2.lineId, dep: dep2, arr: arr2 },
+          });
+        });
+      });
+    });
+  }));
+  results.sort((a, b) => a.dep - b.dep);
+  return results.slice(0, 20);
+}
+
+async function searchJourneys(originId, destId, targetDate) {
+  const direct = await findDirectOptions(originId, destId, targetDate);
+  let transfers = [];
+  // Only bother with the (much more expensive) transfer search when direct
+  // options are sparse — keeps the common "there's a direct bus" case fast.
+  if (direct.length < 5) {
+    try { transfers = await findTransferOptions(originId, destId, targetDate); }
+    catch (e) { console.error('Vaihtoyhteyksien haku epäonnistui', e); }
+  }
+  return direct.concat(transfers).sort((a, b) => a.dep - b.dep).slice(0, 10);
+}
+
+function formatClock(date) {
+  return date.toLocaleTimeString('fi-FI', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderPlannerResults(options) {
+  if (!options.length) return '<div class="stop-arrival-empty">Ei löytynyt yhteyksiä valitulle ajalle.</div>';
+  return options.map(opt => {
+    if (opt.type === 'direct') {
+      return `<div class="planner-option">
+        <div class="planner-option-row"><span class="stop-arrival-route">${escapeHtml(opt.lineId)}</span><span class="planner-option-times">${formatClock(opt.dep)} → ${formatClock(opt.arr)}</span></div>
+        <div class="planner-option-sub">Suora yhteys${opt.headSign ? ' · ' + escapeHtml(opt.headSign) : ''} · ajat arvioituja</div>
+      </div>`;
+    }
+    const transferName = resolveStopName(opt.transferStopId) || ('pysäkki ' + opt.transferStopId);
+    return `<div class="planner-option">
+      <div class="planner-option-row"><span class="stop-arrival-route">${escapeHtml(opt.leg1.lineId)}</span><span class="planner-option-times">${formatClock(opt.leg1.dep)} → ${formatClock(opt.leg1.arr)}</span></div>
+      <div class="planner-option-row"><span class="stop-arrival-route">${escapeHtml(opt.leg2.lineId)}</span><span class="planner-option-times">${formatClock(opt.leg2.dep)} → ${formatClock(opt.leg2.arr)}</span></div>
+      <div class="planner-option-sub">1 vaihto pysäkillä ${escapeHtml(transferName)} · ajat arvioituja</div>
+    </div>`;
+  }).join('');
+}
+
+let plannerOrigin = null;
+let plannerDest = null;
+
+function renderStopSuggestions(query, container, onPick) {
+  const q = query.trim().toLowerCase();
+  container.innerHTML = '';
+  if (!q) { container.style.display = 'none'; return; }
+  const matches = allStops.filter(s => s.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { container.style.display = 'none'; return; }
+  container.style.display = 'block';
+  matches.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'planner-suggestion';
+    item.textContent = s.name + ' (' + s.id + ')';
+    item.onclick = () => onPick(s);
+    container.appendChild(item);
+  });
+}
+
+document.getElementById('planner-origin').addEventListener('input', (e) => {
+  plannerOrigin = null;
+  renderStopSuggestions(e.target.value, document.getElementById('planner-origin-suggestions'), (s) => {
+    plannerOrigin = s;
+    document.getElementById('planner-origin').value = s.name;
+    document.getElementById('planner-origin-suggestions').style.display = 'none';
+  });
+});
+document.getElementById('planner-dest').addEventListener('input', (e) => {
+  plannerDest = null;
+  renderStopSuggestions(e.target.value, document.getElementById('planner-dest-suggestions'), (s) => {
+    plannerDest = s;
+    document.getElementById('planner-dest').value = s.name;
+    document.getElementById('planner-dest-suggestions').style.display = 'none';
+  });
+});
+
+function localDatetimeInputValue(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+document.getElementById('planner-search').addEventListener('click', async () => {
+  if (!plannerOrigin || !plannerDest) { toast('Valitse lähtö- ja määränpääpysäkki listasta.'); return; }
+  if (plannerOrigin.id === plannerDest.id) { toast('Lähtö ja määränpää ovat sama pysäkki.'); return; }
+  const timeVal = document.getElementById('planner-time').value;
+  const targetDate = timeVal ? new Date(timeVal) : new Date();
+  const resultsEl = document.getElementById('planner-results');
+  resultsEl.innerHTML = '<div class="stop-arrival-empty">Haetaan…</div>';
+  try {
+    const options = await searchJourneys(plannerOrigin.id, plannerDest.id, targetDate);
+    resultsEl.innerHTML = renderPlannerResults(options);
+  } catch (e) {
+    console.error('Reittihaku epäonnistui', e);
+    resultsEl.innerHTML = '<div class="stop-arrival-empty">Haku epäonnistui. Yritä uudelleen.</div>';
+  }
+});
+
+function showPlannerPanel() {
+  closeVehicleRoute();
+  closeAlertsPanel();
+  document.getElementById('planner-time').value = localDatetimeInputValue(new Date());
+  document.getElementById('planner-panel').style.display = 'flex';
+}
+function closePlannerPanel() {
+  document.getElementById('planner-panel').style.display = 'none';
+}
+document.getElementById('btn-planner').addEventListener('click', showPlannerPanel);
+document.getElementById('planner-close').addEventListener('click', closePlannerPanel);
 
 async function pollArrivals() {
   try {
