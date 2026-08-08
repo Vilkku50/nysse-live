@@ -1270,19 +1270,32 @@ document.getElementById('btn-fit').addEventListener('click', () => {
   map.fitBounds(L.latLngBounds(latlngs), { padding: [50, 50], maxZoom: 16 });
 });
 
-syncFilterUI();
-poll();
-setInterval(poll, POLL_MS);
+// Each feature's startup is isolated in its own try/catch: this is a plain
+// non-module script, so one synchronous throw here would otherwise abort
+// every statement after it — silently taking out arrivals, alerts, and
+// everything else along with whatever actually failed.
+function safeStart(fn, label) {
+  try { fn(); } catch (e) { console.error(label + ' ei käynnistynyt', e); }
+}
 
-loadStops();
-pollArrivals();
-setInterval(pollArrivals, ARRIVALS_POLL_MS);
-
-pollServiceAlerts();
-setInterval(pollServiceAlerts, ALERTS_POLL_MS);
+safeStart(() => { syncFilterUI(); poll(); setInterval(poll, POLL_MS); }, 'Bussiseuranta');
+safeStart(() => { loadStops(); }, 'Pysäkkien lataus');
+safeStart(() => { pollArrivals(); setInterval(pollArrivals, ARRIVALS_POLL_MS); }, 'Saapumisennusteet');
+safeStart(() => { pollServiceAlerts(); setInterval(pollServiceAlerts, ALERTS_POLL_MS); }, 'Häiriötiedotteet');
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  // skipWaiting()/clients.claim() in sw.js hand control to a new service
+  // worker promptly, but they don't refresh an already-open tab's already-
+  // running JavaScript — without this, an installed PWA that's never fully
+  // closed and reopened can keep running old code indefinitely even though
+  // "the app has updated". Reload once, the first time control changes.
+  let swRefreshed = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (swRefreshed) return;
+    swRefreshed = true;
+    window.location.reload();
+  });
 }
 </script>
 
