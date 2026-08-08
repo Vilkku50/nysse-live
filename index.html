@@ -740,16 +740,31 @@ function estimateTimeAtStopIndex(journey, totalStops, stopIndex, baseDate) {
 }
 
 const journeyPatternsCache = new Map(); // stopId -> Promise<pattern[]>
-function fetchJourneyPatternsForStop(stopId) {
-  if (journeyPatternsCache.has(stopId)) return journeyPatternsCache.get(stopId);
-  const p = fetch(JOURNEY_PATTERNS_URL + '?stopPointId=' + encodeURIComponent(stopId), { cache: 'no-store' })
-    .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
-    .then(data => (data.body || []).map(pattern => ({
+async function fetchJourneyPatternsForStopUncached(stopId) {
+  // Every other endpoint here returns paged results (data.headers.paging:
+  // {startIndex, pageSize, moreData}) — a stop served by many lines could
+  // silently lose patterns past the first page if this isn't followed.
+  const patterns = [];
+  let startIndex = 0;
+  for (let page = 0; page < 5; page++) { // hard cap: a single stop realistically isn't served by more than a handful of pages of lines
+    const res = await fetch(JOURNEY_PATTERNS_URL + '?stopPointId=' + encodeURIComponent(stopId) + '&startIndex=' + startIndex, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const body = data.body || [];
+    body.forEach(pattern => patterns.push({
       lineId: trailingId(pattern.lineUrl),
       stopPoints: (pattern.stopPoints || []).map(s => s.shortName),
       journeys: pattern.journeys || [],
-    })))
-    .catch(e => { journeyPatternsCache.delete(stopId); throw e; });
+    }));
+    const paging = data.data && data.data.headers && data.data.headers.paging;
+    if (!paging || !paging.moreData || body.length === 0) break;
+    startIndex += body.length;
+  }
+  return patterns;
+}
+function fetchJourneyPatternsForStop(stopId) {
+  if (journeyPatternsCache.has(stopId)) return journeyPatternsCache.get(stopId);
+  const p = fetchJourneyPatternsForStopUncached(stopId).catch(e => { journeyPatternsCache.delete(stopId); throw e; });
   journeyPatternsCache.set(stopId, p);
   return p;
 }
@@ -790,7 +805,7 @@ async function findTransferOptions(originId, destId, targetDate) {
       if (!candidates.has(stopId)) candidates.set(stopId, { pattern, oi, idx });
     });
   });
-  const candidateIds = Array.from(candidates.keys()).slice(0, 10); // bound the network cost of a search
+  const candidateIds = Array.from(candidates.keys()).slice(0, 25); // bound the network cost of a search
 
   const results = [];
   await Promise.all(candidateIds.map(async (transferId) => {
@@ -941,6 +956,14 @@ async function pollArrivals() {
     const nextByVehicle = new Map();
     const nextVehicleInfo = new Map();
     const now = Date.now();
+    // The live feed occasionally lists the same physical vehicle more than
+    // once (e.g. mid status-update), which showed up as the exact same bus
+    // and time duplicated in a stop's arrivals list. Collapse near-duplicate
+    // calls (same vehicle+stop within a few minutes of one already kept),
+    // while still allowing a genuine loop route's distinct later pass
+    // through the same stop, hours apart, to show up separately.
+    const seenVehicleStop = new Map(); // "vehicleRef|stopId" -> last kept time (ms)
+    const DUPLICATE_CALL_WINDOW_MS = 3 * 60000;
     entries.forEach(v => {
       const mvj = v.monitoredVehicleJourney;
       if (!mvj) return;
@@ -961,6 +984,10 @@ async function pollArrivals() {
         if (!stopId || !t) return;
         const time = new Date(t);
         if (isNaN(time) || time.getTime() < now - 60000) return; // skip stale/past calls
+        const dedupeKey = vehicleRef + '|' + stopId;
+        const lastKeptTime = seenVehicleStop.get(dedupeKey);
+        if (lastKeptTime != null && Math.abs(time.getTime() - lastKeptTime) < DUPLICATE_CALL_WINDOW_MS) return;
+        seenVehicleStop.set(dedupeKey, time.getTime());
         if (!nextByStop.has(stopId)) nextByStop.set(stopId, []);
         nextByStop.get(stopId).push({ routeId, time, vehicleId: vehicleRef });
         vehicleCalls.push({ stopId, time });
