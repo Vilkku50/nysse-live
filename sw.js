@@ -1,4 +1,4 @@
-const CACHE = 'nysse-live-v14';
+const CACHE = 'nysse-live-v15';
 const SHELL = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -794,18 +794,48 @@ async function findTransferOptions(originId, destId, targetDate) {
   // Candidate transfer stops: stops downstream of the origin on any pattern
   // serving it, excluding the destination itself (that's the direct case)
   // and anything past a stop where that same pattern already reaches it.
-  const candidates = new Map(); // transferStopId -> {pattern, oi, idx}
+  //
+  // Tampere's network is hub-and-spoke — the real interchange for a long
+  // suburban line is disproportionately likely to be near its far end
+  // (often a city-centre terminus), not among the first few stops out of
+  // the origin. Taking a flat "first 25 stops in order" easily gets
+  // exhausted by nearby, useless stops on one long line before ever
+  // reaching that terminus, and can starve out any of the origin's other
+  // lines entirely. So each pattern contributes its nearest stops *and*
+  // its final stop, and patterns are interleaved round-robin rather than
+  // processed one at a time — a short common route and a long one serving
+  // a distant hub both get a fair share of the candidate budget.
+  const CANDIDATES_PER_PATTERN = 12;
+  const CANDIDATE_BUDGET = 25;
+  const perPatternCandidates = [];
   originPatterns.forEach(pattern => {
     const oi = pattern.stopPoints.indexOf(originId);
     if (oi === -1) return;
     const di = pattern.stopPoints.indexOf(destId);
-    pattern.stopPoints.forEach((stopId, idx) => {
-      if (idx <= oi || stopId === destId) return;
-      if (di !== -1 && idx >= di) return;
-      if (!candidates.has(stopId)) candidates.set(stopId, { pattern, oi, idx });
-    });
+    const upperBound = di !== -1 ? di : pattern.stopPoints.length;
+    const downstream = [];
+    for (let idx = oi + 1; idx < upperBound; idx++) {
+      downstream.push({ stopId: pattern.stopPoints[idx], pattern, oi, idx });
+    }
+    if (!downstream.length) return;
+    const nearest = downstream.slice(0, CANDIDATES_PER_PATTERN);
+    const last = downstream[downstream.length - 1];
+    if (!nearest.includes(last)) nearest.push(last);
+    perPatternCandidates.push(nearest);
   });
-  const candidateIds = Array.from(candidates.keys()).slice(0, 25); // bound the network cost of a search
+  const candidates = new Map(); // transferStopId -> {pattern, oi, idx}
+  for (let round = 0; candidates.size < CANDIDATE_BUDGET; round++) {
+    let addedAny = false;
+    for (const list of perPatternCandidates) {
+      if (round >= list.length) continue;
+      addedAny = true;
+      const c = list[round];
+      if (!candidates.has(c.stopId)) candidates.set(c.stopId, c);
+      if (candidates.size >= CANDIDATE_BUDGET) break;
+    }
+    if (!addedAny) break;
+  }
+  const candidateIds = Array.from(candidates.keys());
 
   const results = [];
   await Promise.all(candidateIds.map(async (transferId) => {
