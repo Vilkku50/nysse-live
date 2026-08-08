@@ -941,6 +941,14 @@ async function pollArrivals() {
     const nextByVehicle = new Map();
     const nextVehicleInfo = new Map();
     const now = Date.now();
+    // The live feed occasionally lists the same physical vehicle more than
+    // once (e.g. mid status-update), which showed up as the exact same bus
+    // and time duplicated in a stop's arrivals list. Collapse near-duplicate
+    // calls (same vehicle+stop within a few minutes of one already kept),
+    // while still allowing a genuine loop route's distinct later pass
+    // through the same stop, hours apart, to show up separately.
+    const seenVehicleStop = new Map(); // "vehicleRef|stopId" -> last kept time (ms)
+    const DUPLICATE_CALL_WINDOW_MS = 3 * 60000;
     entries.forEach(v => {
       const mvj = v.monitoredVehicleJourney;
       if (!mvj) return;
@@ -961,6 +969,10 @@ async function pollArrivals() {
         if (!stopId || !t) return;
         const time = new Date(t);
         if (isNaN(time) || time.getTime() < now - 60000) return; // skip stale/past calls
+        const dedupeKey = vehicleRef + '|' + stopId;
+        const lastKeptTime = seenVehicleStop.get(dedupeKey);
+        if (lastKeptTime != null && Math.abs(time.getTime() - lastKeptTime) < DUPLICATE_CALL_WINDOW_MS) return;
+        seenVehicleStop.set(dedupeKey, time.getTime());
         if (!nextByStop.has(stopId)) nextByStop.set(stopId, []);
         nextByStop.get(stopId).push({ routeId, time, vehicleId: vehicleRef });
         vehicleCalls.push({ stopId, time });
